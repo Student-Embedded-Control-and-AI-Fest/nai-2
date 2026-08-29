@@ -57,7 +57,7 @@
 
       <section id="tab-dataset" class="tab-page">
         <div class="panel">
-          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 dataset setup</h2><p>Define the continuous sliding window and class labels before recording.</p></div></div>
+          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 dataset setup</h2><p>Define the continuous sliding window and class labels. Loaded datasets can be unlocked and extended without clearing existing samples.</p></div></div>
           <div class="form-grid setup-grid">
             <label>Window length (samples)<input id="normalizedLength" type="number" min="10" max="500" value="75"></label>
             <label>Window stride (samples)<input id="windowStride" type="number" min="1" max="250" value="5"></label>
@@ -114,13 +114,18 @@
 
       <section id="tab-deploy" class="tab-page">
         <div class="panel">
-          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 model deployment</h2><p>The web trainer can already save the NAI4 package. Device upload will be enabled in the next one-slot firmware stage.</p></div></div>
-          <div class="deploy-controls"><button id="deployBtn" class="primary" disabled>Deploy (next firmware stage)</button><button id="saveModelBtn" class="secondary" disabled>Save .nai package</button><label>BLE chunk<select id="chunkSize"><option value="160" selected>160 bytes</option><option value="128">128 bytes</option><option value="64">64 bytes</option><option value="20">20 bytes</option></select></label></div>
-          <progress id="deployProgress" max="1" value="0"></progress><div id="deployText" class="status-box compact">Mode 2 v0.1 streams and trains only. One-slot model deployment comes next.</div>
+          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 single-slot deployment</h2><p>Upload the freshly trained NAI4 package, or load an existing <code>.nai</code>. The current firmware stores one model only: no A/B slot and no rollback journal.</p></div></div>
+          <div class="deploy-controls">
+            <button id="deployBtn" class="primary" disabled>Deploy to M0Sense</button>
+            <button id="saveModelBtn" class="secondary" disabled>Save .nai package</button>
+            <label class="file-button">Load .nai for deploy<input id="deployNaiFile" type="file" accept=".nai,application/zip" hidden></label>
+            <label>BLE chunk<select id="chunkSize"><option value="160" selected>160 bytes</option><option value="128">128 bytes</option><option value="64">64 bytes</option><option value="20">20 bytes</option></select></label>
+          </div>
+          <progress id="deployProgress" max="1" value="0"></progress><div id="deployText" class="status-box compact">Single-slot capacity: 188 KiB raw NAI4 files. This stage verifies and stores the model; device inference comes next.</div>
         </div>
 
         <div class="panel">
-          <div class="section-title"><span class="step">2</span><div><h2>Device mode</h2><p>Mode 2 streams IMU continuously. After deployment, inference will run repeatedly on the rolling window.</p></div></div>
+          <div class="section-title"><span class="step">2</span><div><h2>Device mode</h2><p>Mode 2 streams IMU continuously. v0.2 stores the model first; rolling-window Noodle inference is the next firmware brick.</p></div></div>
           <div class="mode-row"><button id="trainingModeBtn" class="secondary" disabled>TRAINING MODE</button><button id="inferenceModeBtn" class="secondary" disabled>INFERENCE MODE</button><strong id="modeStatus">Current mode: MODE 2 STREAMING</strong></div>
         </div>
 

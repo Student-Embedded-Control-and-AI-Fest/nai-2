@@ -101,3 +101,10 @@ The current Mode 2 defaults match the M0Sense firmware:
 - Raw input size for Accel + Gyro: **450 values**
 
 Training capture is browser-controlled. The device streams continuously; pressing **START** begins labeling the incoming stream with the selected class and **STOP** ends the session. The browser then creates overlapping windows using the configured window length and stride.
+
+
+### Extending a saved Mode 2 dataset
+
+Load the `.npz`, click **Unlock setup**, add labels and/or record more
+continuous sessions, then click **Lock setup** again. Existing samples are
+preserved. The window length remains fixed for dimensional consistency.

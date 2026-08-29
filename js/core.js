@@ -687,6 +687,45 @@ async function loadNai(file) {
   return {...cfg,mean,scale,layers,fileName:file.name};
 }
 
+
+async function loadNaiPackage(file) {
+  const zip=await JSZip.loadAsync(await file.arrayBuffer());
+
+  const get=async name=>{
+    const e=zip.file(name);
+    if(!e)throw new Error(`NAI missing ${name}`);
+    return new Uint8Array(await e.async('arraybuffer'));
+  };
+
+  const cfgBytes=await get('cfg.bin');
+  const cfg=parseCfg(cfgBytes);
+
+  const names=['cfg.bin','mean.bin','scale.bin'];
+
+  for(let i=0;i<cfg.nLayers;i++){
+    names.push(`w${String(i).padStart(2,'0')}.bin`);
+    names.push(`b${String(i).padStart(2,'0')}.bin`);
+  }
+
+  const files={};
+  for(const name of names) files[name]=await get(name);
+
+  const total=Object.values(files).reduce((s,b)=>s+b.byteLength,0);
+
+  return {
+    files,
+    total,
+    blob:file,
+    rep:cfg.rep,
+    labels:[...cfg.labels],
+    N:cfg.N,
+    inputDim:cfg.inputDim,
+    dims:[...cfg.dims],
+    binary:cfg.binary,
+    cfg,
+  };
+}
+
 function predictNai(nai, rows) {
   const probs=[],pred=[];
   for(const raw of rows){
@@ -824,6 +863,6 @@ window.NAI = Object.freeze({
   sklearnStratifiedSplit, buildRepresentationDataset,
   fitScaler, standardizeRows, flattenRows,
   makeModel, predictTf, accuracy,
-  exportNai4, loadNai, predictNai,
+  exportNai4, loadNai, loadNaiPackage, predictNai,
   _internals:Object.freeze({makeNpyHeader,npyF32,npyI32,npyUnicode,parseNpy,MT19937,makeCfg,parseCfg}),
 });

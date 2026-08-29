@@ -1,6 +1,8 @@
 
 'use strict';
 
+const NAI_MODEL_PAYLOAD_CAPACITY = 192512; // 188 KiB single-slot payload
+
 const NAI_BLE = Object.freeze({
   DEVICE_PREFIX: 'NoodleAI',
   SERVICE_UUID: '7f8b0001-5f5b-4f4a-a5d5-2e889aa10001',
@@ -146,11 +148,15 @@ class NoodleAIBLE extends EventTarget {
   async deployPackage(files,{chunkSize=160,onProgress=()=>{}}={}) {
     if(!this.connected) throw new Error('Connect NoodleAI first');
     const entries=Object.entries(files||{}); if(!entries.length) throw new Error('No NAI4 package to deploy');
-    const total=entries.reduce((s,[,b])=>s+b.byteLength,0); let sent=0;
+    const total=entries.reduce((s,[,b])=>s+b.byteLength,0);
+    if(total>NAI_MODEL_PAYLOAD_CAPACITY) {
+      throw new Error(`NAI4 raw files ${(total/1024).toFixed(1)} KiB exceed the current M0Sense single-slot payload capacity ${(NAI_MODEL_PAYLOAD_CAPACITY/1024).toFixed(0)} KiB`);
+    }
+    let sent=0;
     try {
       onProgress({sent,total,file:'',stage:'begin'});
       await this.writeControl(Uint8Array.of(NAI_BLE.OP_DEPLOY_BEGIN));
-      const slot=await this.waitStatus('DEPLOY:',5000);
+      const slot=await this.waitStatus('DEPLOY:SINGLE',15000,true);
       this.emit('deploy-log',{text:`${slot} · ${(total/1024).toFixed(1)} KiB`});
       for(const [name,b0] of entries) {
         const bytes=b0 instanceof Uint8Array?b0:new Uint8Array(b0);
@@ -169,7 +175,7 @@ class NoodleAIBLE extends EventTarget {
       }
       onProgress({sent,total,file:'',stage:'commit'});
       await this.writeControl(Uint8Array.of(NAI_BLE.OP_DEPLOY_COMMIT));
-      await this.waitStatus('MODEL_OK',15000,true);
+      await this.waitStatus('MODEL_STORED',15000,true);
       onProgress({sent:total,total,file:'',stage:'done'});
     } catch(err) {
       try{await this.writeControl(Uint8Array.of(NAI_BLE.OP_DEPLOY_ABORT));}catch(_){}

@@ -30,3 +30,38 @@ Windows from the same recording session overlap heavily and are therefore correl
 ## Deployment
 
 Deployment is intentionally disabled in this web build. The next BL702 firmware stage will implement one-slot model storage with no A/B slots, then the Deploy button can be re-enabled.
+
+
+## v0.2 — extend loaded datasets
+
+A loaded `.npz` is no longer a dead-end.
+
+After loading, **Unlock setup** preserves all existing windows and lets you:
+
+- add new class labels,
+- record more data for existing classes,
+- record data for newly added classes,
+- change the stride used for future recordings.
+
+The existing window length is intentionally immutable once saved windows exist,
+because mixing different input dimensions in one MLP dataset would be invalid.
+
+An existing class that already owns saved windows cannot be removed. Empty
+newly-added classes can be removed safely.
+
+
+## Deployment stage
+
+This web build supports the Mode 2 v0.2 firmware single-slot protocol.
+
+- raw model payload capacity: 188 KiB
+- no A/B
+- each file has CRC32
+- firmware reads each file back from flash and verifies CRC
+- final status is `MODEL_STORED`
+
+`MODEL_STORED` deliberately means storage verification only. Noodle parsing and
+continuous inference are the next firmware stage.
+
+The Deploy tab can also load an existing `.nai` directly, so a browser refresh
+does not force retraining.
