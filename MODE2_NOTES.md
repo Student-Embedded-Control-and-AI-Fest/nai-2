@@ -65,3 +65,12 @@ continuous inference are the next firmware stage.
 
 The Deploy tab can also load an existing `.nai` directly, so a browser refresh
 does not force retraining.
+
+
+## v0.4 web update for firmware v0.3 inference
+
+- TRAINING MODE / INFERENCE MODE are enabled immediately after BLE connection.
+- `MODEL:READY:N:D:K` updates the device-model summary.
+- `P:<index>:<confidence>` is rendered with labels from the trained or loaded
+  `.nai` package when available.
+- The same single-slot deployment protocol is unchanged.

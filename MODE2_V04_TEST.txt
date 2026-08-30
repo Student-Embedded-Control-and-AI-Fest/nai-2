@@ -1,0 +1,13 @@
+NoodleAI Web Mode 2 v0.4
+========================
+
+Pairs with M0Sense Mode 2 firmware v0.3.
+
+Changes:
+- TRAINING MODE and INFERENCE MODE buttons enable immediately after connection.
+- Understands MODEL:READY:<N>:<D>:<K>.
+- Displays P:<class>:<confidence> continuously.
+- Uses labels from the currently trained or loaded .nai package when available.
+- Same deployment protocol as v0.3.1; no need to change .nai format.
+
+For the current model, expected device geometry is N=100, D=600, K=2.

@@ -121,17 +121,17 @@
             <label class="file-button">Load .nai for deploy<input id="deployNaiFile" type="file" accept=".nai,application/zip" hidden></label>
             <label>BLE chunk<select id="chunkSize"><option value="160" selected>160 bytes</option><option value="128">128 bytes</option><option value="64">64 bytes</option><option value="20">20 bytes</option></select></label>
           </div>
-          <progress id="deployProgress" max="1" value="0"></progress><div id="deployText" class="status-box compact">Single-slot capacity: 188 KiB raw NAI4 files. This stage verifies and stores the model; device inference comes next.</div>
+          <progress id="deployProgress" max="1" value="0"></progress><div id="deployText" class="status-box compact">Single-slot capacity: 188 KiB raw NAI4 files. The firmware stores, reloads, and runs the model directly with Noodle.</div>
         </div>
 
         <div class="panel">
-          <div class="section-title"><span class="step">2</span><div><h2>Device mode</h2><p>Mode 2 streams IMU continuously. v0.2 stores the model first; rolling-window Noodle inference is the next firmware brick.</p></div></div>
+          <div class="section-title"><span class="step">2</span><div><h2>Device mode</h2><p>Mode 2 streams IMU continuously. Training mode only streams; Inference mode runs the committed NAI4 model on a rolling window.</p></div></div>
           <div class="mode-row"><button id="trainingModeBtn" class="secondary" disabled>TRAINING MODE</button><button id="inferenceModeBtn" class="secondary" disabled>INFERENCE MODE</button><strong id="modeStatus">Current mode: MODE 2 STREAMING</strong></div>
         </div>
 
         <div class="panel prediction-panel">
           <div class="section-title"><span class="step">3</span><div><h2>Last prediction</h2></div></div>
-          <div id="predictionLabel" class="prediction-label">—</div><div id="predictionConfidence" class="prediction-confidence">Continuous prediction will appear here</div><div id="predictionMeta" class="muted">Mode 2: rolling window → prediction every stride</div>
+          <div id="predictionLabel" class="prediction-label">—</div><div id="predictionConfidence" class="prediction-confidence">Continuous prediction will appear here</div><div id="predictionMeta" class="muted">Mode 2 v0.3: model-defined rolling window → Noodle prediction every stride</div>
         </div>
 
         <div class="panel"><div class="section-head"><div><h2>Status / diagnostics</h2></div><button id="clearLogBtn" class="ghost">Clear</button></div><pre id="log"></pre></div>

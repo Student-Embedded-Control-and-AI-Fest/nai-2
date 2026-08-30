@@ -108,3 +108,6 @@ Training capture is browser-controlled. The device streams continuously; pressin
 Load the `.npz`, click **Unlock setup**, add labels and/or record more
 continuous sessions, then click **Lock setup** again. Existing samples are
 preserved. The window length remains fixed for dimensional consistency.
+
+
+Mode 2 v0.4 pairs with M0Sense firmware v0.3 for continuous device-side Noodle inference.
