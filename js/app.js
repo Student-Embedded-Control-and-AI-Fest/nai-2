@@ -1,4 +1,11 @@
 
+if (!window.noodleBLE || !window.NoodleAIBLE) {
+  throw new Error(
+    'NoodleAI BLE runtime did not load. Hard-refresh the page and verify js/ble.js is published.'
+  );
+}
+
+
 'use strict';
 
 const $=id=>document.getElementById(id);
@@ -77,7 +84,7 @@ function lockUi(locked){
   $('lockSetupBtn').textContent=locked?'Unlock setup':'Lock setup';
 
   $('recordLabel').disabled=!locked;
-  $('armRecordBtn').disabled=!(locked&&noodleBLE.connected);
+  $('armRecordBtn').disabled=!(locked&&window.noodleBLE.connected);
   $('stopRecordBtn').disabled=true;
   $('trainBtn').disabled=!(locked&&state.targets.length);
 }
@@ -172,7 +179,7 @@ function clearPendingRecording(){
 $('armRecordBtn').addEventListener('click',()=>{
   try{
     if(!state.setupLocked)throw new Error('Lock the Mode 2 dataset setup first.');
-    if(!noodleBLE.connected)throw new Error('Connect the device first.');
+    if(!window.noodleBLE.connected)throw new Error('Connect the device first.');
     const idx=$('recordLabel').selectedIndex;
     if(idx<0||idx>=state.labels.length)throw new Error('Choose a label.');
     clearPendingRecording();
@@ -200,7 +207,7 @@ $('stopRecordBtn').addEventListener('click',()=>{
   state.recording=null;
   state.recordStartTms=null;
   $('stopRecordBtn').disabled=true;
-  $('armRecordBtn').disabled=!(state.setupLocked&&noodleBLE.connected);
+  $('armRecordBtn').disabled=!(state.setupLocked&&window.noodleBLE.connected);
   $('recordLabel').disabled=!state.setupLocked;
 
   if(count<N){
@@ -247,7 +254,7 @@ $('saveSampleBtn').addEventListener('click',()=>{
   clearPendingRecording();
   state.pendingLabelIndex=null;
   $('recordLabel').disabled=!state.setupLocked;
-  $('armRecordBtn').disabled=!(state.setupLocked&&noodleBLE.connected);
+  $('armRecordBtn').disabled=!(state.setupLocked&&window.noodleBLE.connected);
   $('recordProgress').textContent=`Saved ${added} windows. Select a label and press START for another continuous recording.`;
   invalidateModel();refreshDataset();
 });
@@ -257,7 +264,7 @@ $('discardSampleBtn').addEventListener('click',()=>{
   state.recording=null;state.recordStartTms=null;
   clearPendingRecording();state.pendingLabelIndex=null;
   $('stopRecordBtn').disabled=true;
-  $('armRecordBtn').disabled=!(state.setupLocked&&noodleBLE.connected);
+  $('armRecordBtn').disabled=!(state.setupLocked&&window.noodleBLE.connected);
   $('recordLabel').disabled=!state.setupLocked;
   $('recordProgress').textContent=wasRecording?'Recording cancelled. Press START when ready.':'Discarded. Press START when ready.';
 });
@@ -315,7 +322,7 @@ async function trainModel(){
     $('trainResult').textContent=`Float val ${pct(valAcc)} · INT8 val ${pct(pkg.qValAcc)} · T=${q.threshold.toFixed(2)} · ${(pkg.total/1024).toFixed(1)} KiB`;
     const f=pkg.filter;const fdesc=(f.flags&NAI.FILTER_HP)?`${f.highpassHz.toFixed(2)}–${f.lowpassHz.toFixed(1)} Hz band-pass`:`${f.lowpassHz.toFixed(1)} Hz low-pass`;
     $('quantResult').textContent=`INT8 PTQ complete · ${fdesc} · validation ${pct(pkg.qValAcc)} · threshold sweep 0.30–0.90 selected ${q.threshold.toFixed(2)} · accepted accuracy ${pct(q.acceptedAccuracy)} · coverage ${pct(q.coverage)} · stride ${stride} samples · raw package ${(pkg.total/1024).toFixed(1)} KiB.`;
-    $('curveSummary').textContent=`Finished ${epochs} epochs · float validation ${pct(valAcc)} · INT8 validation ${pct(pkg.qValAcc)} · selected threshold ${q.threshold.toFixed(2)}`;$('saveModelBtn').disabled=false;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!noodleBLE.connected;drawTrainingCurves(hist);drawThresholdSweep(pkg.sweep);log(`Training + INT8 complete: ${REP_LABEL[rep]}, ${fdesc}, topology ${pkg.dims.join('→')}, float validation=${pct(valAcc)}, INT8 validation=${pct(pkg.qValAcc)}, threshold=${q.threshold.toFixed(2)}, coverage=${pct(q.coverage)}, NAI4 INT8=${(pkg.total/1024).toFixed(1)} KiB.`);switchTab('dataset');
+    $('curveSummary').textContent=`Finished ${epochs} epochs · float validation ${pct(valAcc)} · INT8 validation ${pct(pkg.qValAcc)} · selected threshold ${q.threshold.toFixed(2)}`;$('saveModelBtn').disabled=false;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!window.noodleBLE.connected;drawTrainingCurves(hist);drawThresholdSweep(pkg.sweep);log(`Training + INT8 complete: ${REP_LABEL[rep]}, ${fdesc}, topology ${pkg.dims.join('→')}, float validation=${pct(valAcc)}, INT8 validation=${pct(pkg.qValAcc)}, threshold=${q.threshold.toFixed(2)}, coverage=${pct(q.coverage)}, NAI4 INT8=${(pkg.total/1024).toFixed(1)} KiB.`);switchTab('dataset');
   }catch(e){alert(e.message);log(`Training ERROR: ${e.message}`);}finally{$('trainBtn').disabled=!(state.setupLocked&&state.targets.length);}
 }
 $('trainBtn').addEventListener('click',trainModel);
@@ -333,7 +340,7 @@ $('deployNaiFile').addEventListener('change',async e=>{
     state.modelLabels=[...pkg.labels];
 
     $('saveModelBtn').disabled=false;
-    $('deployBtn').disabled=!noodleBLE.connected;
+    $('deployBtn').disabled=!window.noodleBLE.connected;
 
     $('deployText').textContent=
       `Loaded ${file.name}: ${(pkg.total/1024).toFixed(1)} KiB · `+
@@ -350,17 +357,17 @@ $('deployNaiFile').addEventListener('change',async e=>{
 });
 
 $('saveModelBtn').addEventListener('click',()=>{if(!state.pkg)return;downloadBlob(state.pkg.blob,`noodleai_${state.trainedRep||'model'}.nai`);});
-$('deployBtn').addEventListener('click',async()=>{if(!state.pkg)return;try{$('deployBtn').disabled=true;$('trainingModeBtn').disabled=true;$('inferenceModeBtn').disabled=true;const chunk=Number($('chunkSize').value);await noodleBLE.deployPackage(state.pkg.files,{chunkSize:chunk,onProgress:p=>{const prog=$('deployProgress');prog.max=Math.max(1,p.total);prog.value=p.sent;const percent=p.total?Math.round(100*p.sent/p.total):0;const msg={begin:'Erasing single model region…','file-begin':`Preparing ${p.file}…`,sending:`${p.file}: ${percent}% total`,commit:'Files CRC-verified; committing single model slot…',done:'MODEL_STORED — files verified and committed.',error:`Deployment failed: ${p.error||'unknown error'}`}[p.stage]||p.stage;$('deployText').textContent=msg;}});log('Deployment complete: MODEL_STORED.');}catch(e){alert(e.message);log(`Deployment ERROR: ${e.message}`);}finally{$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!(noodleBLE.connected&&state.pkg);$('trainingModeBtn').disabled=!noodleBLE.connected;$('inferenceModeBtn').disabled=!noodleBLE.connected;}});
-$('trainingModeBtn').addEventListener('click',async()=>{try{await noodleBLE.setTraining();}catch(e){alert(e.message);}});$('inferenceModeBtn').addEventListener('click',async()=>{try{await noodleBLE.setInference();}catch(e){alert(e.message);}});
+$('deployBtn').addEventListener('click',async()=>{if(!state.pkg)return;try{$('deployBtn').disabled=true;$('trainingModeBtn').disabled=true;$('inferenceModeBtn').disabled=true;const chunk=Number($('chunkSize').value);await window.noodleBLE.deployPackage(state.pkg.files,{chunkSize:chunk,onProgress:p=>{const prog=$('deployProgress');prog.max=Math.max(1,p.total);prog.value=p.sent;const percent=p.total?Math.round(100*p.sent/p.total):0;const msg={begin:'Erasing single model region…','file-begin':`Preparing ${p.file}…`,sending:`${p.file}: ${percent}% total`,commit:'Files CRC-verified; committing single model slot…',done:'MODEL_STORED — files verified and committed.',error:`Deployment failed: ${p.error||'unknown error'}`}[p.stage]||p.stage;$('deployText').textContent=msg;}});log('Deployment complete: MODEL_STORED.');}catch(e){alert(e.message);log(`Deployment ERROR: ${e.message}`);}finally{$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!(window.noodleBLE.connected&&state.pkg);$('trainingModeBtn').disabled=!window.noodleBLE.connected;$('inferenceModeBtn').disabled=!window.noodleBLE.connected;}});
+$('trainingModeBtn').addEventListener('click',async()=>{try{await window.noodleBLE.setTraining();}catch(e){alert(e.message);}});$('inferenceModeBtn').addEventListener('click',async()=>{try{await window.noodleBLE.setInference();}catch(e){alert(e.message);}});
 
-$('connectBtn').addEventListener('click',async()=>{try{if(noodleBLE.connected)await noodleBLE.disconnect();else await noodleBLE.connect();}catch(e){alert(e.message);log(`BLE ERROR: ${e.message}`);}});
-noodleBLE.addEventListener('connected',e=>{$('connectBtn').textContent='Disconnect';$('bleBadge').textContent='Connected';$('bleBadge').classList.remove('badge-muted');$('deviceStatus').textContent=`Connected: ${e.detail.name}`;$('supportNote').textContent='Mode 2 continuous six-axis stream active.';$('trainingModeBtn').disabled=false;$('inferenceModeBtn').disabled=false;$('modeStatus').textContent='Current mode: waiting for device status';$('armRecordBtn').disabled=!state.setupLocked;$('stopRecordBtn').disabled=true;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!state.pkg;log(`BLE connected to ${e.detail.name} · Mode 2 continuous stream.`);});
-noodleBLE.addEventListener('disconnected',()=>{$('connectBtn').textContent='Connect';$('bleBadge').textContent='Disconnected';$('bleBadge').classList.add('badge-muted');$('deviceStatus').textContent='Disconnected';$('supportNote').textContent=NoodleAIBLE.supportMessage();$('trainingModeBtn').disabled=true;$('inferenceModeBtn').disabled=true;$('modeStatus').textContent='Current mode: MODE 2 STREAMING';$('armRecordBtn').disabled=true;$('stopRecordBtn').disabled=true;state.recording=null;$('deployBtn').disabled=true;log('BLE disconnected.');});
-noodleBLE.addEventListener('warning',e=>log(`BLE warning: ${e.detail.text}`));noodleBLE.addEventListener('deploy-log',e=>log(e.detail.text));
+$('connectBtn').addEventListener('click',async()=>{try{if(window.noodleBLE.connected)await window.noodleBLE.disconnect();else await window.noodleBLE.connect();}catch(e){alert(e.message);log(`BLE ERROR: ${e.message}`);}});
+window.noodleBLE.addEventListener('connected',e=>{$('connectBtn').textContent='Disconnect';$('bleBadge').textContent='Connected';$('bleBadge').classList.remove('badge-muted');$('deviceStatus').textContent=`Connected: ${e.detail.name}`;$('supportNote').textContent='Mode 2 continuous six-axis stream active.';$('trainingModeBtn').disabled=false;$('inferenceModeBtn').disabled=false;$('modeStatus').textContent='Current mode: waiting for device status';$('armRecordBtn').disabled=!state.setupLocked;$('stopRecordBtn').disabled=true;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!state.pkg;log(`BLE connected to ${e.detail.name} · Mode 2 continuous stream.`);});
+window.noodleBLE.addEventListener('disconnected',()=>{$('connectBtn').textContent='Connect';$('bleBadge').textContent='Disconnected';$('bleBadge').classList.add('badge-muted');$('deviceStatus').textContent='Disconnected';$('supportNote').textContent=window.NoodleAIBLE.supportMessage();$('trainingModeBtn').disabled=true;$('inferenceModeBtn').disabled=true;$('modeStatus').textContent='Current mode: MODE 2 STREAMING';$('armRecordBtn').disabled=true;$('stopRecordBtn').disabled=true;state.recording=null;$('deployBtn').disabled=true;log('BLE disconnected.');});
+window.noodleBLE.addEventListener('warning',e=>log(`BLE warning: ${e.detail.text}`));window.noodleBLE.addEventListener('deploy-log',e=>log(e.detail.text));
 
-noodleBLE.addEventListener('imu',e=>{const s=e.detail.sample;$('accelStatus').textContent=`ax ${s.ax.toFixed(3)} g   ay ${s.ay.toFixed(3)} g   az ${s.az.toFixed(3)} g`;$('gyroStatus').textContent=`gx ${s.gx.toFixed(1)} °/s   gy ${s.gy.toFixed(1)} °/s   gz ${s.gz.toFixed(1)} °/s`;pushLive(s);if(state.recording){if(state.recordStartTms==null)state.recordStartTms=s.t_ms;state.recording.push([s.ax,s.ay,s.az,s.gx,s.gy,s.gz,s.t_ms]);const secs=(state.recording.length/NAI.SAMPLE_RATE_HZ).toFixed(1);$('recordProgress').textContent=`Recording “${state.labels[state.pendingLabelIndex]}”: ${state.recording.length} samples · ${secs} s — perform it repeatedly, then STOP.`;}});
+window.noodleBLE.addEventListener('imu',e=>{const s=e.detail.sample;$('accelStatus').textContent=`ax ${s.ax.toFixed(3)} g   ay ${s.ay.toFixed(3)} g   az ${s.az.toFixed(3)} g`;$('gyroStatus').textContent=`gx ${s.gx.toFixed(1)} °/s   gy ${s.gy.toFixed(1)} °/s   gz ${s.gz.toFixed(1)} °/s`;pushLive(s);if(state.recording){if(state.recordStartTms==null)state.recordStartTms=s.t_ms;state.recording.push([s.ax,s.ay,s.az,s.gx,s.gy,s.gz,s.t_ms]);const secs=(state.recording.length/NAI.SAMPLE_RATE_HZ).toFixed(1);$('recordProgress').textContent=`Recording “${state.labels[state.pendingLabelIndex]}”: ${state.recording.length} samples · ${secs} s — perform it repeatedly, then STOP.`;}});
 
-noodleBLE.addEventListener('status',e=>{const text=e.detail.text;if(e.detail.notify)log(`Device: ${text}`);if(text==='MODE:T'){state.deviceMode='T';$('modeStatus').textContent='Current mode: TRAINING';$('deviceStatus').textContent='Training / streaming mode';}else if(text==='MODE:I'){state.deviceMode='I';$('modeStatus').textContent='Current mode: INFERENCE';$('deviceStatus').textContent='Inference mode — filling rolling window';}else if(text==='NO_MODEL'){$('deviceStatus').textContent='No committed model loaded';$('modeStatus').textContent='Current mode: TRAINING';state.deviceMode='T';}else if(text.startsWith('MODEL:READY:')){const p=text.split(':');const N=Number(p[2]),D=Number(p[3]),K=Number(p[4]),stride=Number(p[5]||5),thr=Number(p[6]||500)/1000;$('deployText').textContent=`Device INT8 model ready: ${N} samples · ${D} inputs · ${K} classes · threshold ${thr.toFixed(2)}.`;$('predictionMeta').textContent=`Device rolling window: ${N} samples (${(N/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · stride ${stride} samples (${(stride/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · accept confidence ≥ ${pct(thr)}`;}else if(text==='MODEL_STORED'){switchTab('deploy');$('deployText').textContent='MODEL_STORED — flash verified and committed. Loading model into Noodle…';}else if(text==='ERR:MODEL_LOAD'){$('deployText').textContent='Model was stored, but device-side Noodle loading failed.';}else if(text.startsWith('L:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]);state.modelLabels[idx]=p.slice(2).join(':');}}else if(text.startsWith('P:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]),conf=Number(p[2]);const label=state.modelLabels[idx]??state.labels[idx]??String(idx);$('predictionLabel').textContent=label;$('predictionConfidence').textContent=`Confidence ${pct(conf)} · accepted`;$('deviceStatus').textContent=`Inference: ${label} (${pct(conf)})`;}}else if(text.startsWith('U:')){const conf=Number(text.split(':')[1]);$('predictionLabel').textContent='UNKNOWN';$('predictionConfidence').textContent=`Confidence ${pct(conf)} · below model threshold`;$('deviceStatus').textContent=`Inference: UNKNOWN (${pct(conf)})`;}});
+window.noodleBLE.addEventListener('status',e=>{const text=e.detail.text;if(e.detail.notify)log(`Device: ${text}`);if(text==='MODE:T'){state.deviceMode='T';$('modeStatus').textContent='Current mode: TRAINING';$('deviceStatus').textContent='Training / streaming mode';}else if(text==='MODE:I'){state.deviceMode='I';$('modeStatus').textContent='Current mode: INFERENCE';$('deviceStatus').textContent='Inference mode — filling rolling window';}else if(text==='NO_MODEL'){$('deviceStatus').textContent='No committed model loaded';$('modeStatus').textContent='Current mode: TRAINING';state.deviceMode='T';}else if(text.startsWith('MODEL:READY:')){const p=text.split(':');const N=Number(p[2]),D=Number(p[3]),K=Number(p[4]),stride=Number(p[5]||5),thr=Number(p[6]||500)/1000;$('deployText').textContent=`Device INT8 model ready: ${N} samples · ${D} inputs · ${K} classes · threshold ${thr.toFixed(2)}.`;$('predictionMeta').textContent=`Device rolling window: ${N} samples (${(N/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · stride ${stride} samples (${(stride/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · accept confidence ≥ ${pct(thr)}`;}else if(text==='MODEL_STORED'){switchTab('deploy');$('deployText').textContent='MODEL_STORED — flash verified and committed. Loading model into Noodle…';}else if(text==='ERR:MODEL_LOAD'){$('deployText').textContent='Model was stored, but device-side Noodle loading failed.';}else if(text.startsWith('L:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]);state.modelLabels[idx]=p.slice(2).join(':');}}else if(text.startsWith('P:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]),conf=Number(p[2]);const label=state.modelLabels[idx]??state.labels[idx]??String(idx);$('predictionLabel').textContent=label;$('predictionConfidence').textContent=`Confidence ${pct(conf)} · accepted`;$('deviceStatus').textContent=`Inference: ${label} (${pct(conf)})`;}}else if(text.startsWith('U:')){const conf=Number(text.split(':')[1]);$('predictionLabel').textContent='UNKNOWN';$('predictionConfidence').textContent=`Confidence ${pct(conf)} · below model threshold`;$('deviceStatus').textContent=`Inference: UNKNOWN (${pct(conf)})`;}});
 
 function pushLive(s){const L=250;state.live.t.push(s.t_ms/1000);const av=[s.ax,s.ay,s.az],gv=[s.gx,s.gy,s.gz];for(let c=0;c<3;c++){state.live.accel[c].push(av[c]);state.live.gyro[c].push(gv[c]);}if(state.live.t.length>L){state.live.t.shift();for(const a of state.live.accel)a.shift();for(const a of state.live.gyro)a.shift();}drawLineChart($('accelCanvas'),state.live.accel,['ax','ay','az']);drawLineChart($('gyroCanvas'),state.live.gyro,['gx','gy','gz']);}
 $('clearPlotBtn').addEventListener('click',()=>{state.live={t:[],accel:[[],[],[]],gyro:[[],[],[]]};drawLiveEmpty();});
@@ -372,5 +379,5 @@ function drawTrainingCurves(h=state.history){if(!h||!h.epoch?.length){drawLineCh
 function drawThresholdSweep(sw=state.thresholdSweep){if(!sw||!sw.rows?.length){drawLineChart($('thresholdCanvas'),[[],[]],['accepted accuracy','coverage'],{fixedY:[0,1]});return;}drawLineChart($('thresholdCanvas'),[sw.rows.map(r=>r.acceptedAccuracy),sw.rows.map(r=>r.coverage)],['accepted accuracy','coverage'],{fixedY:[0,1]});}
 
 $('clearLogBtn').addEventListener('click',()=>$('log').textContent='');
-$('supportNote').textContent=NoodleAIBLE.supportMessage();
+$('supportNote').textContent=window.NoodleAIBLE.supportMessage();
 refreshLabels();refreshDataset();lockUi(false);updateInputAndTopology();drawLiveEmpty();drawTrainingCurves();drawThresholdSweep();initTf();
