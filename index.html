@@ -3,144 +3,190 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f8fb">
-  <meta name="description" content="NoodleAI Web: collect continuous QMI8658 gesture windows, train an MLP in the browser, and deploy NoodleAI models over Web Bluetooth.">
-  <title>NoodleAI Web</title>
+  <meta name="theme-color" content="#08111f">
+  <meta name="description" content="NoodleAI Studio: collect continuous QMI8658 gesture windows, train an MLP in the browser, and deploy NoodleAI models over Web Bluetooth.">
+  <title>NoodleAI Studio</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
   <div class="app-shell">
     <header class="app-header">
-      <div>
-        <div class="eyebrow">NoodleAI</div>
-        <h1>NoodleAI Web</h1>
-        <p>Collect. Train. Upload. Infer.</p>
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"><span>N</span></div>
+        <div>
+          <div class="eyebrow">Embedded ML Studio</div>
+          <h1>Noodle<span>AI</span></h1>
+          <p>Train in the browser. Think on the device.</p>
+        </div>
       </div>
-      <div class="header-badges">
-        <span id="tfBadge" class="badge">TensorFlow.js loading…</span>
-        <span id="bleBadge" class="badge badge-muted">Disconnected</span>
+
+      <div class="header-side">
+        <div class="hardware-line">
+          <span>M0Sense</span><i></i><span>BL702</span><i></i><span>QMI8658</span><i></i><span>INT8</span>
+        </div>
+        <div class="header-badges">
+          <span id="tfBadge" class="badge">TensorFlow.js loading…</span>
+          <span id="bleBadge" class="badge badge-muted">Disconnected</span>
+        </div>
       </div>
     </header>
 
-    <section class="device-strip panel" aria-label="Device">
-      <button id="connectBtn" class="primary">Connect</button>
+    <section class="device-strip" aria-label="Device">
+      <button id="connectBtn" class="primary connect-button">Connect</button>
       <div class="device-main">
+        <span class="micro-label">DEVICE</span>
         <strong id="deviceStatus">Disconnected</strong>
         <span id="supportNote">Checking Web Bluetooth…</span>
       </div>
-      <div class="sensor-reading"><span>Accel</span><strong id="accelStatus">ax — &nbsp; ay — &nbsp; az —</strong></div>
-      <div class="sensor-reading"><span>Gyro</span><strong id="gyroStatus">gx — &nbsp; gy — &nbsp; gz —</strong></div>
+      <div class="sensor-reading accel-reading">
+        <span class="sensor-icon">A</span>
+        <div><span>ACCELEROMETER · g</span><strong id="accelStatus">ax — &nbsp; ay — &nbsp; az —</strong></div>
+      </div>
+      <div class="sensor-reading gyro-reading">
+        <span class="sensor-icon">G</span>
+        <div><span>GYROSCOPE · deg/s</span><strong id="gyroStatus">gx — &nbsp; gy — &nbsp; gz —</strong></div>
+      </div>
     </section>
 
     <nav class="tabs" aria-label="NoodleAI workspace">
-      <button class="tab active" data-tab="live">Live IMU</button>
-      <button class="tab" data-tab="dataset">Dataset &amp; Train</button>
-      <button class="tab" data-tab="curves">Training Curves</button>
-      <button class="tab" data-tab="deploy">Deploy &amp; Infer</button>
+      <button class="tab active" data-tab="live"><span>01</span>Live IMU</button>
+      <button class="tab" data-tab="dataset"><span>02</span>Dataset &amp; Train</button>
+      <button class="tab" data-tab="curves"><span>03</span>Training Curves</button>
+      <button class="tab" data-tab="deploy"><span>04</span>Deploy &amp; Infer</button>
     </nav>
 
     <main>
       <section id="tab-live" class="tab-page active">
-        <div class="panel">
+        <div class="panel hero-panel">
           <div class="section-head">
-            <div><h2>Live QMI8658</h2><p>Raw six-axis IMU · last 5 seconds</p></div>
-            <button id="clearPlotBtn" class="secondary">Clear plot</button>
+            <div>
+              <div class="section-kicker">LIVE TELEMETRY</div>
+              <h2>QMI8658 motion stream</h2>
+              <p>Raw six-axis IMU · rolling 5-second view · 50 Hz</p>
+            </div>
+            <button id="clearPlotBtn" class="ghost">Clear plot</button>
           </div>
-          <div class="chart-stack">
-            <div class="chart-card"><div class="chart-title"><strong>Acceleration</strong><span>g</span></div><canvas id="accelCanvas" width="1100" height="260"></canvas></div>
-            <div class="chart-card"><div class="chart-title"><strong>Angular rate</strong><span>deg/s</span></div><canvas id="gyroCanvas" width="1100" height="260"></canvas></div>
+          <div class="chart-stack live-charts">
+            <div class="chart-card">
+              <div class="chart-title"><div><strong>Acceleration</strong><small>Linear motion + gravity</small></div><span>g</span></div>
+              <canvas id="accelCanvas" width="1100" height="260"></canvas>
+            </div>
+            <div class="chart-card">
+              <div class="chart-title"><div><strong>Angular rate</strong><small>Bias-corrected rotation</small></div><span>deg/s</span></div>
+              <canvas id="gyroCanvas" width="1100" height="260"></canvas>
+            </div>
           </div>
         </div>
       </section>
 
       <section id="tab-dataset" class="tab-page">
-        <div class="panel">
-          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 dataset setup</h2><p>Define the continuous sliding window and class labels. Loaded datasets can be unlocked and extended without clearing existing samples.</p></div></div>
-          <div class="form-grid setup-grid">
-            <label>Window length (samples)<input id="normalizedLength" type="number" min="10" max="500" value="75"></label>
-            <label>Window stride (samples)<input id="windowStride" type="number" min="1" max="250" value="5"></label>
-            <div class="input-summary"><span>Mode 2 window</span><strong id="windowTimeSummary">75 @ 50 Hz = 1.50 s</strong></div>
-            <div class="input-summary"><span>Current input</span><strong id="inputDimSummary">75 × 6 = 450</strong></div>
+        <div class="workspace-grid dataset-workspace">
+          <div class="panel">
+            <div class="section-title"><span class="step">1</span><div><div class="section-kicker">DATASET</div><h2>Define the motion window</h2><p>Set the sliding window and class vocabulary. Existing datasets can be unlocked and extended.</p></div></div>
+            <div class="form-grid setup-grid">
+              <label>Window length <span>samples</span><input id="normalizedLength" type="number" min="10" max="500" value="75"></label>
+              <label>Window stride <span>samples</span><input id="windowStride" type="number" min="1" max="250" value="5"></label>
+              <div class="input-summary"><span>WINDOW</span><strong id="windowTimeSummary">75 @ 50 Hz = 1.50 s</strong></div>
+              <div class="input-summary"><span>INPUT TENSOR</span><strong id="inputDimSummary">75 × 6 = 450</strong></div>
+            </div>
+            <div class="label-editor">
+              <div class="label-add"><input id="labelEntry" placeholder="Class label, e.g. wave"><button id="addLabelBtn" class="secondary">Add class</button></div>
+              <select id="labelList" size="4" aria-label="Defined labels"></select>
+              <button id="removeLabelBtn" class="ghost">Remove selected</button>
+            </div>
+            <div class="action-row split-actions">
+              <div><button id="lockSetupBtn" class="primary">Lock setup</button><button id="resetDatasetBtn" class="ghost">Reset</button></div>
+              <div><button id="loadDatasetBtn" class="secondary">Load .npz</button><button id="saveDatasetBtn" class="secondary" disabled>Save .npz</button><input id="datasetFile" type="file" accept=".npz" hidden></div>
+            </div>
           </div>
-          <div class="label-editor">
-            <div class="label-add"><input id="labelEntry" placeholder="Class label, e.g. 1"><button id="addLabelBtn" class="secondary">Add label</button></div>
-            <select id="labelList" size="4" aria-label="Defined labels"></select>
-            <button id="removeLabelBtn" class="ghost">Remove selected</button>
-          </div>
-          <div class="action-row split-actions">
-            <div><button id="lockSetupBtn" class="primary">Lock setup</button><button id="resetDatasetBtn" class="secondary">Reset dataset</button></div>
-            <div><button id="loadDatasetBtn" class="secondary">Load .npz</button><button id="saveDatasetBtn" class="secondary" disabled>Save .npz</button><input id="datasetFile" type="file" accept=".npz" hidden></div>
+
+          <div class="panel record-panel">
+            <div class="section-title"><span class="step">2</span><div><div class="section-kicker">CAPTURE</div><h2>Record continuous examples</h2><p>Pick a class, hit START, repeat the gesture naturally, then stop. NoodleAI slices the stream automatically.</p></div></div>
+            <div class="record-grid">
+              <label>Active class<select id="recordLabel" disabled></select></label>
+              <div class="record-actions"><button id="armRecordBtn" class="record-button" disabled><span class="rec-dot"></span>START recording</button><button id="stopRecordBtn" class="secondary" disabled>STOP</button><button id="saveSampleBtn" class="secondary" disabled>Save windows</button><button id="discardSampleBtn" class="ghost" disabled>Discard</button></div>
+            </div>
+            <div id="recordProgress" class="status-box">Define labels and lock setup first.</div>
+            <div class="dataset-summary">
+              <div><span>TOTAL WINDOWS</span><strong id="sampleCount">0</strong></div>
+              <div><span>CLASSES</span><strong id="classCount">0</strong></div>
+              <div><span>RAW MODE 2</span><strong id="rawDatasetStatus">—</strong></div>
+            </div>
+            <div id="classCounts" class="class-counts"></div>
           </div>
         </div>
 
-        <div class="panel">
-          <div class="section-title"><span class="step">2</span><div><h2>Record continuous examples</h2><p>Choose a label, press START, perform that gesture repeatedly, then press STOP. The browser slices the stream into overlapping Mode 2 windows.</p></div></div>
-          <div class="record-grid">
-            <label>Label<select id="recordLabel" disabled></select></label>
-            <div class="record-actions"><button id="armRecordBtn" class="primary" disabled>START recording</button><button id="stopRecordBtn" class="secondary" disabled>STOP</button><button id="saveSampleBtn" class="secondary" disabled>Save windows</button><button id="discardSampleBtn" class="ghost" disabled>Discard</button></div>
-          </div>
-          <div id="recordProgress" class="status-box">Define labels and lock setup first.</div>
-          <div class="dataset-summary">
-            <div><span>Total windows</span><strong id="sampleCount">0</strong></div>
-            <div><span>Classes</span><strong id="classCount">0</strong></div>
-            <div><span>Raw Mode 2 windows</span><strong id="rawDatasetStatus">—</strong></div>
-          </div>
-          <div id="classCounts" class="class-counts"></div>
-        </div>
-
-        <div class="panel">
-          <div class="section-title"><span class="step">3</span><div><h2>Train Mode 2 MLP</h2><p>Training runs locally in this browser. Each saved example is one sliding window matching the future device input.</p></div></div>
+        <div class="panel train-panel">
+          <div class="section-title"><span class="step">3</span><div><div class="section-kicker">TRAIN + CALIBRATE</div><h2>Build the NoodleAI MLP</h2><p>Float training, post-training INT8 quantization, and confidence-threshold calibration all run locally.</p></div></div>
           <div class="form-grid train-grid">
             <label>Input representation<select id="representation"><option value="accel">Accelerometer</option><option value="gyro">Gyroscope</option><option value="accel+gyro" selected>Accel + Gyro</option><option value="quaternion">Relative Quaternion</option><option value="velocity">Estimated Velocity</option><option value="velocity+quaternion">Velocity + Quaternion</option></select></label>
             <label>Hidden layers<input id="hiddenLayers" value="32,16" placeholder="32,16"></label>
             <label>Epochs<input id="epochs" type="number" min="10" max="5000" value="300"></label>
           </div>
-          <div id="topology" class="topology">Topology: —</div>
-          <div class="action-row"><button id="trainBtn" class="primary" disabled>Train + INT8 calibrate</button><span id="trainResult" class="inline-status"></span></div>
-          <div id="quantResult" class="status-box compact">Preprocessing is model-defined: Accel/Gyro/Accel+Gyro use a 0.10–8 Hz first-order band-pass; Quaternion/Velocity representations use an 8 Hz low-pass before Madgwick. After float training, INT8 calibration and the 0.30 → 0.90 confidence sweep run on the same filtered representation.</div>
+          <div id="topology" class="topology"><span>NETWORK</span>Topology: —</div>
+          <div class="action-row train-action"><button id="trainBtn" class="primary" disabled>Train + INT8 calibrate</button><span id="trainResult" class="inline-status"></span></div>
+          <div id="quantResult" class="status-box compact info-box">Preprocessing is model-defined: Accel/Gyro/Accel+Gyro use a 0.10–8 Hz first-order band-pass; Quaternion/Velocity representations use an 8 Hz low-pass before Madgwick. After float training, INT8 calibration and the 0.30 → 0.90 confidence sweep run on the same filtered representation.</div>
         </div>
       </section>
 
       <section id="tab-curves" class="tab-page">
         <div class="panel">
-          <div class="section-head"><div><h2>Training curves</h2><p id="curveSummary">Train a model to see loss and accuracy history.</p></div></div>
-          <div class="chart-stack">
-            <div class="chart-card"><div class="chart-title"><strong>Loss</strong><span>train / validation</span></div><canvas id="lossCanvas" width="1100" height="280"></canvas></div>
-            <div class="chart-card"><div class="chart-title"><strong>Accuracy</strong><span>train / validation</span></div><canvas id="accuracyCanvas" width="1100" height="280"></canvas></div>
-            <div class="chart-card"><div class="chart-title"><strong>INT8 confidence sweep</strong><span>accepted accuracy / coverage · 0.30 → 0.90</span></div><canvas id="thresholdCanvas" width="1100" height="280"></canvas></div>
+          <div class="section-head"><div><div class="section-kicker">MODEL DIAGNOSTICS</div><h2>Training &amp; validation</h2><p id="curveSummary">Train a model to see loss, accuracy, and deployment-threshold history.</p></div></div>
+          <div class="chart-stack curves-grid">
+            <div class="chart-card"><div class="chart-title"><div><strong>Loss</strong><small>Optimization convergence</small></div><span>train / validation</span></div><canvas id="lossCanvas" width="1100" height="280"></canvas></div>
+            <div class="chart-card"><div class="chart-title"><div><strong>Accuracy</strong><small>Generalization performance</small></div><span>train / validation</span></div><canvas id="accuracyCanvas" width="1100" height="280"></canvas></div>
+            <div class="chart-card threshold-card"><div class="chart-title"><div><strong>INT8 confidence sweep</strong><small>Validation-selected rejection threshold</small></div><span>0.30 → 0.90</span></div><canvas id="thresholdCanvas" width="1100" height="280"></canvas></div>
           </div>
         </div>
       </section>
 
       <section id="tab-deploy" class="tab-page">
-        <div class="panel">
-          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 single-slot deployment</h2><p>Upload the freshly trained NAI4 package, or load an existing <code>.nai</code>. The current firmware stores one model only: no A/B slot and no rollback journal. New packages are NAI4 INT8 and carry stride, validation-selected confidence threshold, and signal-filter settings in cfg.bin.</p></div></div>
-          <div class="deploy-controls">
-            <button id="deployBtn" class="primary" disabled>Deploy to M0Sense</button>
-            <button id="saveModelBtn" class="secondary" disabled>Save .nai package</button>
-            <label class="file-button">Load .nai for deploy<input id="deployNaiFile" type="file" accept=".nai,application/zip" hidden></label>
-            <label>BLE chunk<select id="chunkSize"><option value="160" selected>160 bytes</option><option value="128">128 bytes</option><option value="64">64 bytes</option><option value="20">20 bytes</option></select></label>
+        <div class="deploy-layout">
+          <div class="deploy-main">
+            <div class="panel">
+              <div class="section-title"><span class="step">1</span><div><div class="section-kicker">DEPLOYMENT</div><h2>Send the model to M0Sense</h2><p>One compact NAI4 package carries the INT8 network, scaler, stride, confidence threshold, and signal-filter configuration.</p></div></div>
+              <div class="deploy-controls">
+                <button id="deployBtn" class="primary" disabled>Deploy to M0Sense</button>
+                <button id="saveModelBtn" class="secondary" disabled>Save .nai</button>
+                <label class="file-button">Load .nai<input id="deployNaiFile" type="file" accept=".nai,application/zip" hidden></label>
+                <label>BLE chunk<select id="chunkSize"><option value="160" selected>160 bytes</option><option value="128">128 bytes</option><option value="64">64 bytes</option><option value="20">20 bytes</option></select></label>
+              </div>
+              <div class="progress-wrap"><progress id="deployProgress" max="1" value="0"></progress></div>
+              <div id="deployText" class="status-box compact">Single-slot capacity: 188 KiB raw NAI4 files. The firmware stores, reloads, and runs the model directly with Noodle.</div>
+            </div>
+
+            <div class="panel">
+              <div class="section-title"><span class="step">2</span><div><div class="section-kicker">RUNTIME</div><h2>Choose device mode</h2><p>Training streams raw IMU. Inference executes the committed model continuously on the rolling window.</p></div></div>
+              <div class="mode-row"><button id="trainingModeBtn" class="mode-button" disabled>TRAINING MODE</button><button id="inferenceModeBtn" class="mode-button inference-button" disabled>INFERENCE MODE</button><strong id="modeStatus">Current mode: MODE 2 STREAMING</strong></div>
+            </div>
           </div>
-          <progress id="deployProgress" max="1" value="0"></progress><div id="deployText" class="status-box compact">Single-slot capacity: 188 KiB raw NAI4 files. The firmware stores, reloads, and runs the model directly with Noodle.</div>
+
+          <div class="panel prediction-panel">
+            <div class="prediction-top"><span class="live-pill"><i></i>ON-DEVICE</span><span class="micro-label">LATEST PREDICTION</span></div>
+            <div class="prediction-orbit">
+              <div class="prediction-ring">
+                <div id="predictionLabel" class="prediction-label">—</div>
+                <div id="predictionConfidence" class="prediction-confidence">Waiting for inference</div>
+              </div>
+            </div>
+            <div id="predictionMeta" class="prediction-meta">Mode 2 · INT8 · Noodle runtime · model-defined filtering</div>
+          </div>
         </div>
 
-        <div class="panel">
-          <div class="section-title"><span class="step">2</span><div><h2>Device mode</h2><p>Mode 2 streams IMU continuously. Training mode only streams; Inference mode runs the committed NAI4 model on a rolling window.</p></div></div>
-          <div class="mode-row"><button id="trainingModeBtn" class="secondary" disabled>TRAINING MODE</button><button id="inferenceModeBtn" class="secondary" disabled>INFERENCE MODE</button><strong id="modeStatus">Current mode: MODE 2 STREAMING</strong></div>
-        </div>
-
-        <div class="panel prediction-panel">
-          <div class="section-title"><span class="step">3</span><div><h2>Last prediction</h2></div></div>
-          <div id="predictionLabel" class="prediction-label">—</div><div id="predictionConfidence" class="prediction-confidence">Continuous prediction will appear here</div><div id="predictionMeta" class="muted">Mode 2 v0.4.5 INT8: cfg-defined filtering → model representation → quantized Noodle prediction → confidence rejection</div>
-        </div>
-
-        <div class="panel"><div class="section-head"><div><h2>Status / diagnostics</h2></div><button id="clearLogBtn" class="ghost">Clear</button></div><pre id="log"></pre></div>
+        <div class="panel log-panel"><div class="section-head"><div><div class="section-kicker">SERIALIZED STATUS</div><h2>Status / diagnostics</h2></div><button id="clearLogBtn" class="ghost">Clear</button></div><pre id="log"></pre></div>
       </section>
     </main>
 
-    <footer>Runs locally in your browser. Raw gesture data does not need to leave your computer.</footer>
+    <footer>
+      <span>NoodleAI Mode 2</span>
+      <span>Browser-trained · BLE-deployed · Noodle-executed</span>
+      <span>Raw gesture data stays local</span>
+    </footer>
   </div>
   <script src="js/core.js"></script>
   <script src="js/ble.js"></script>
