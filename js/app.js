@@ -7,7 +7,7 @@ const REP_LABEL={accel:'Accelerometer',gyro:'Gyroscope','accel+gyro':'Accel + Gy
 const state={
   labels:[],samples:[],rawSamples:[],targets:[],rawLengths:[],durationsMs:[],N:75,setupLocked:false,
   pendingRaw:null,pendingWindow:null,pendingWindows:null,pendingLabelIndex:null,pendingDurationMs:0,recording:null,recordStartTms:null,
-  model:null,scaler:null,pkg:null,history:null,trainedRep:null,modelLabels:[],deviceMode:'?',
+  model:null,scaler:null,pkg:null,history:null,thresholdSweep:null,trainedRep:null,modelLabels:[],deviceMode:'?',
   live:{t:[],accel:[[],[],[]],gyro:[[],[],[]]},
 };
 
@@ -53,7 +53,7 @@ function refreshDataset(){
   $('trainBtn').disabled=!(state.setupLocked&&n>0);
 }
 
-function invalidateModel(){if(state.model){try{state.model.dispose();}catch(_){}}state.model=null;state.scaler=null;state.pkg=null;state.history=null;state.trainedRep=null;state.modelLabels=[];$('saveModelBtn').disabled=true;$('deployBtn').disabled=true;$('trainResult').textContent='';$('curveSummary').textContent='Train a model to see loss and accuracy history.';drawTrainingCurves();}
+function invalidateModel(){if(state.model){try{state.model.dispose();}catch(_){}}state.model=null;state.scaler=null;state.pkg=null;state.history=null;state.thresholdSweep=null;state.trainedRep=null;state.modelLabels=[];$('saveModelBtn').disabled=true;$('deployBtn').disabled=true;$('trainResult').textContent='';$('curveSummary').textContent='Train a model to see loss and accuracy history.';$('quantResult').textContent='After float training: post-training INT8 quantization uses the training split for activation calibration, then sweeps confidence 0.30 → 0.90 on the held-out validation split.';drawTrainingCurves();drawThresholdSweep();}
 
 function lockUi(locked){
   state.setupLocked=locked;
@@ -306,9 +306,15 @@ async function trainModel(){
     const hist={epoch:[],loss:[],valLoss:[],acc:[],valAcc:[]};$('trainResult').textContent=`Training ${D} → ${hidden.join(' → ')} → ${K}…`;switchTab('curves');
     await model.fit(tx,ty,{epochs,batchSize:Math.min(200,split.train.length),shuffle:true,validationData:[vx,vy],verbose:0,callbacks:{onEpochEnd:async(epoch,l)=>{const acc=l.acc??l.accuracy??0,va=l.val_acc??l.val_accuracy??0;hist.epoch.push(epoch+1);hist.loss.push(l.loss);hist.valLoss.push(l.val_loss);hist.acc.push(acc);hist.valAcc.push(va);if(epoch===0||(epoch+1)%5===0||epoch+1===epochs){$('curveSummary').textContent=`Epoch ${epoch+1}/${epochs} · loss ${l.loss.toFixed(4)} · validation accuracy ${pct(va)}`;drawTrainingCurves(hist);await tf.nextFrame();}}}});
     tx.dispose();vx.dispose();ty.dispose();vy.dispose();
-    const tr=await NAI.predictTf(model,Xtr,K),va=await NAI.predictTf(model,Xva,K);const trainAcc=NAI.accuracy(tr.pred,Array.from(ytr)),valAcc=NAI.accuracy(va.pred,Array.from(yva));const pkg=await NAI.exportNai4(model,scaler,state.labels,state.N,rep);
-    if(state.model){try{state.model.dispose();}catch(_){}}state.model=model;state.scaler=scaler;state.pkg=pkg;state.history=hist;state.trainedRep=rep;state.modelLabels=[...state.labels];
-    $('trainResult').textContent=`Train ${pct(trainAcc)} · validation ${pct(valAcc)} · NAI4 ${(pkg.total/1024).toFixed(1)} KiB`;$('curveSummary').textContent=`Finished ${epochs} epochs · train ${pct(trainAcc)} · validation ${pct(valAcc)} · ${REP_LABEL[rep]}`;$('saveModelBtn').disabled=false;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!noodleBLE.connected;drawTrainingCurves(hist);log(`Training complete: ${REP_LABEL[rep]}, topology ${pkg.dims.join('→')}, train=${pct(trainAcc)}, validation=${pct(valAcc)}, NAI4=${(pkg.total/1024).toFixed(1)} KiB.`);switchTab('dataset');
+    const tr=await NAI.predictTf(model,Xtr,K),va=await NAI.predictTf(model,Xva,K);const trainAcc=NAI.accuracy(tr.pred,Array.from(ytr)),valAcc=NAI.accuracy(va.pred,Array.from(yva));
+    $('trainResult').textContent=`Float validation ${pct(valAcc)} · quantizing INT8…`;
+    const stride=Math.max(1,Math.min(state.N,Number($('windowStride').value)||5));
+    const pkg=await NAI.exportNai4Int8(model,scaler,state.labels,state.N,rep,Xtr,Xva,yva,stride);
+    if(state.model){try{state.model.dispose();}catch(_){}}state.model=model;state.scaler=scaler;state.pkg=pkg;state.history=hist;state.thresholdSweep=pkg.sweep;state.trainedRep=rep;state.modelLabels=[...state.labels];
+    const q=pkg.sweep.selected;
+    $('trainResult').textContent=`Float val ${pct(valAcc)} · INT8 val ${pct(pkg.qValAcc)} · T=${q.threshold.toFixed(2)} · ${(pkg.total/1024).toFixed(1)} KiB`;
+    $('quantResult').textContent=`INT8 PTQ complete · validation ${pct(pkg.qValAcc)} · threshold sweep 0.30–0.90 selected ${q.threshold.toFixed(2)} · accepted accuracy ${pct(q.acceptedAccuracy)} · coverage ${pct(q.coverage)} · stride ${stride} samples · raw package ${(pkg.total/1024).toFixed(1)} KiB.`;
+    $('curveSummary').textContent=`Finished ${epochs} epochs · float validation ${pct(valAcc)} · INT8 validation ${pct(pkg.qValAcc)} · selected threshold ${q.threshold.toFixed(2)}`;$('saveModelBtn').disabled=false;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!noodleBLE.connected;drawTrainingCurves(hist);drawThresholdSweep(pkg.sweep);log(`Training + INT8 complete: ${REP_LABEL[rep]}, topology ${pkg.dims.join('→')}, float validation=${pct(valAcc)}, INT8 validation=${pct(pkg.qValAcc)}, threshold=${q.threshold.toFixed(2)}, coverage=${pct(q.coverage)}, NAI4 INT8=${(pkg.total/1024).toFixed(1)} KiB.`);switchTab('dataset');
   }catch(e){alert(e.message);log(`Training ERROR: ${e.message}`);}finally{$('trainBtn').disabled=!(state.setupLocked&&state.targets.length);}
 }
 $('trainBtn').addEventListener('click',trainModel);
@@ -320,6 +326,7 @@ $('deployNaiFile').addEventListener('change',async e=>{
 
     const pkg=await NAI.loadNaiPackage(file);
 
+    if(!pkg.int8)throw new Error('This is a Float32 NAI4 package. Mode 2 v0.4 firmware expects the new INT8 NAI4 package; load the dataset and Train + INT8 calibrate first.');
     state.pkg=pkg;
     state.trainedRep=pkg.rep;
     state.modelLabels=[...pkg.labels];
@@ -329,9 +336,9 @@ $('deployNaiFile').addEventListener('change',async e=>{
 
     $('deployText').textContent=
       `Loaded ${file.name}: ${(pkg.total/1024).toFixed(1)} KiB · `+
-      `${pkg.N} samples · ${pkg.inputDim} inputs · ${pkg.labels.length} classes. Ready to deploy.`;
+      `${pkg.N} samples · ${pkg.inputDim} inputs · ${pkg.labels.length} classes · INT8 · threshold ${pkg.quant.confidenceThreshold.toFixed(2)} · stride ${pkg.quant.strideSamples}. Ready to deploy.`;
 
-    log(`Loaded deployable NAI4 package ${file.name}: ${pkg.dims.join('→')}, ${(pkg.total/1024).toFixed(1)} KiB.`);
+    log(`Loaded deployable NAI4 INT8 package ${file.name}: ${pkg.dims.join('→')}, threshold=${pkg.quant.confidenceThreshold.toFixed(2)}, stride=${pkg.quant.strideSamples}, ${(pkg.total/1024).toFixed(1)} KiB.`);
   }catch(err){
     alert(err.message);
     log(`NAI load ERROR: ${err.message}`);
@@ -351,7 +358,7 @@ noodleBLE.addEventListener('warning',e=>log(`BLE warning: ${e.detail.text}`));no
 
 noodleBLE.addEventListener('imu',e=>{const s=e.detail.sample;$('accelStatus').textContent=`ax ${s.ax.toFixed(3)} g   ay ${s.ay.toFixed(3)} g   az ${s.az.toFixed(3)} g`;$('gyroStatus').textContent=`gx ${s.gx.toFixed(1)} °/s   gy ${s.gy.toFixed(1)} °/s   gz ${s.gz.toFixed(1)} °/s`;pushLive(s);if(state.recording){if(state.recordStartTms==null)state.recordStartTms=s.t_ms;state.recording.push([s.ax,s.ay,s.az,s.gx,s.gy,s.gz,s.t_ms]);const secs=(state.recording.length/NAI.SAMPLE_RATE_HZ).toFixed(1);$('recordProgress').textContent=`Recording “${state.labels[state.pendingLabelIndex]}”: ${state.recording.length} samples · ${secs} s — perform it repeatedly, then STOP.`;}});
 
-noodleBLE.addEventListener('status',e=>{const text=e.detail.text;if(e.detail.notify)log(`Device: ${text}`);if(text==='MODE:T'){state.deviceMode='T';$('modeStatus').textContent='Current mode: TRAINING';$('deviceStatus').textContent='Training / streaming mode';}else if(text==='MODE:I'){state.deviceMode='I';$('modeStatus').textContent='Current mode: INFERENCE';$('deviceStatus').textContent='Inference mode — filling rolling window';}else if(text==='NO_MODEL'){$('deviceStatus').textContent='No committed model loaded';$('modeStatus').textContent='Current mode: TRAINING';state.deviceMode='T';}else if(text.startsWith('MODEL:READY:')){const p=text.split(':');const N=Number(p[2]),D=Number(p[3]),K=Number(p[4]);$('deployText').textContent=`Device model ready: ${N} samples · ${D} inputs · ${K} classes.`;$('predictionMeta').textContent=`Device rolling window: ${N} samples (${(N/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · prediction every 5 samples (0.10 s stride)`;}else if(text==='MODEL_STORED'){switchTab('deploy');$('deployText').textContent='MODEL_STORED — flash verified and committed. Loading model into Noodle…';}else if(text==='ERR:MODEL_LOAD'){$('deployText').textContent='Model was stored, but device-side Noodle loading failed.';}else if(text.startsWith('P:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]),conf=Number(p[2]);const label=state.modelLabels[idx]??state.labels[idx]??String(idx);$('predictionLabel').textContent=label;$('predictionConfidence').textContent=`Confidence ${pct(conf)}`;$('deviceStatus').textContent=`Inference: ${label} (${pct(conf)})`;}}});
+noodleBLE.addEventListener('status',e=>{const text=e.detail.text;if(e.detail.notify)log(`Device: ${text}`);if(text==='MODE:T'){state.deviceMode='T';$('modeStatus').textContent='Current mode: TRAINING';$('deviceStatus').textContent='Training / streaming mode';}else if(text==='MODE:I'){state.deviceMode='I';$('modeStatus').textContent='Current mode: INFERENCE';$('deviceStatus').textContent='Inference mode — filling rolling window';}else if(text==='NO_MODEL'){$('deviceStatus').textContent='No committed model loaded';$('modeStatus').textContent='Current mode: TRAINING';state.deviceMode='T';}else if(text.startsWith('MODEL:READY:')){const p=text.split(':');const N=Number(p[2]),D=Number(p[3]),K=Number(p[4]),stride=Number(p[5]||5),thr=Number(p[6]||500)/1000;$('deployText').textContent=`Device INT8 model ready: ${N} samples · ${D} inputs · ${K} classes · threshold ${thr.toFixed(2)}.`;$('predictionMeta').textContent=`Device rolling window: ${N} samples (${(N/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · stride ${stride} samples (${(stride/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · accept confidence ≥ ${pct(thr)}`;}else if(text==='MODEL_STORED'){switchTab('deploy');$('deployText').textContent='MODEL_STORED — flash verified and committed. Loading model into Noodle…';}else if(text==='ERR:MODEL_LOAD'){$('deployText').textContent='Model was stored, but device-side Noodle loading failed.';}else if(text.startsWith('L:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]);state.modelLabels[idx]=p.slice(2).join(':');}}else if(text.startsWith('P:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]),conf=Number(p[2]);const label=state.modelLabels[idx]??state.labels[idx]??String(idx);$('predictionLabel').textContent=label;$('predictionConfidence').textContent=`Confidence ${pct(conf)} · accepted`;$('deviceStatus').textContent=`Inference: ${label} (${pct(conf)})`;}}else if(text.startsWith('U:')){const conf=Number(text.split(':')[1]);$('predictionLabel').textContent='UNKNOWN';$('predictionConfidence').textContent=`Confidence ${pct(conf)} · below model threshold`;$('deviceStatus').textContent=`Inference: UNKNOWN (${pct(conf)})`;}});
 
 function pushLive(s){const L=250;state.live.t.push(s.t_ms/1000);const av=[s.ax,s.ay,s.az],gv=[s.gx,s.gy,s.gz];for(let c=0;c<3;c++){state.live.accel[c].push(av[c]);state.live.gyro[c].push(gv[c]);}if(state.live.t.length>L){state.live.t.shift();for(const a of state.live.accel)a.shift();for(const a of state.live.gyro)a.shift();}drawLineChart($('accelCanvas'),state.live.accel,['ax','ay','az']);drawLineChart($('gyroCanvas'),state.live.gyro,['gx','gy','gz']);}
 $('clearPlotBtn').addEventListener('click',()=>{state.live={t:[],accel:[[],[],[]],gyro:[[],[],[]]};drawLiveEmpty();});
@@ -360,7 +367,8 @@ function drawLineChart(canvas,series,labels,{fixedY=null}={}){const ctx=canvas.g
 function drawLiveEmpty(){drawLineChart($('accelCanvas'),[[],[],[]],['ax','ay','az']);drawLineChart($('gyroCanvas'),[[],[],[]],['gx','gy','gz']);}
 
 function drawTrainingCurves(h=state.history){if(!h||!h.epoch?.length){drawLineChart($('lossCanvas'),[[],[]],['train','validation']);drawLineChart($('accuracyCanvas'),[[],[]],['train','validation'],{fixedY:[0,1]});return;}drawLineChart($('lossCanvas'),[h.loss,h.valLoss],['train loss','validation loss']);drawLineChart($('accuracyCanvas'),[h.acc,h.valAcc],['train accuracy','validation accuracy'],{fixedY:[0,1]});}
+function drawThresholdSweep(sw=state.thresholdSweep){if(!sw||!sw.rows?.length){drawLineChart($('thresholdCanvas'),[[],[]],['accepted accuracy','coverage'],{fixedY:[0,1]});return;}drawLineChart($('thresholdCanvas'),[sw.rows.map(r=>r.acceptedAccuracy),sw.rows.map(r=>r.coverage)],['accepted accuracy','coverage'],{fixedY:[0,1]});}
 
 $('clearLogBtn').addEventListener('click',()=>$('log').textContent='');
 $('supportNote').textContent=NoodleAIBLE.supportMessage();
-refreshLabels();refreshDataset();lockUi(false);updateInputAndTopology();drawLiveEmpty();drawTrainingCurves();initTf();
+refreshLabels();refreshDataset();lockUi(false);updateInputAndTopology();drawLiveEmpty();drawTrainingCurves();drawThresholdSweep();initTf();

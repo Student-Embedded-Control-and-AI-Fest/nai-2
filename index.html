@@ -98,7 +98,8 @@
             <label>Epochs<input id="epochs" type="number" min="10" max="5000" value="300"></label>
           </div>
           <div id="topology" class="topology">Topology: —</div>
-          <div class="action-row"><button id="trainBtn" class="primary" disabled>Train</button><span id="trainResult" class="inline-status"></span></div>
+          <div class="action-row"><button id="trainBtn" class="primary" disabled>Train + INT8 calibrate</button><span id="trainResult" class="inline-status"></span></div>
+          <div id="quantResult" class="status-box compact">After float training: post-training INT8 quantization uses the training split for activation calibration, then sweeps confidence 0.30 → 0.90 on the held-out validation split. Selection rule: best accepted accuracy with ≥90% coverage; ties choose the higher threshold.</div>
         </div>
       </section>
 
@@ -108,13 +109,14 @@
           <div class="chart-stack">
             <div class="chart-card"><div class="chart-title"><strong>Loss</strong><span>train / validation</span></div><canvas id="lossCanvas" width="1100" height="280"></canvas></div>
             <div class="chart-card"><div class="chart-title"><strong>Accuracy</strong><span>train / validation</span></div><canvas id="accuracyCanvas" width="1100" height="280"></canvas></div>
+            <div class="chart-card"><div class="chart-title"><strong>INT8 confidence sweep</strong><span>accepted accuracy / coverage · 0.30 → 0.90</span></div><canvas id="thresholdCanvas" width="1100" height="280"></canvas></div>
           </div>
         </div>
       </section>
 
       <section id="tab-deploy" class="tab-page">
         <div class="panel">
-          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 single-slot deployment</h2><p>Upload the freshly trained NAI4 package, or load an existing <code>.nai</code>. The current firmware stores one model only: no A/B slot and no rollback journal.</p></div></div>
+          <div class="section-title"><span class="step">1</span><div><h2>Mode 2 single-slot deployment</h2><p>Upload the freshly trained NAI4 package, or load an existing <code>.nai</code>. The current firmware stores one model only: no A/B slot and no rollback journal. New packages are NAI4 INT8 and carry stride + validation-selected confidence threshold in cfg.bin.</p></div></div>
           <div class="deploy-controls">
             <button id="deployBtn" class="primary" disabled>Deploy to M0Sense</button>
             <button id="saveModelBtn" class="secondary" disabled>Save .nai package</button>
@@ -131,7 +133,7 @@
 
         <div class="panel prediction-panel">
           <div class="section-title"><span class="step">3</span><div><h2>Last prediction</h2></div></div>
-          <div id="predictionLabel" class="prediction-label">—</div><div id="predictionConfidence" class="prediction-confidence">Continuous prediction will appear here</div><div id="predictionMeta" class="muted">Mode 2 v0.3: model-defined rolling window → Noodle prediction every stride</div>
+          <div id="predictionLabel" class="prediction-label">—</div><div id="predictionConfidence" class="prediction-confidence">Continuous prediction will appear here</div><div id="predictionMeta" class="muted">Mode 2 v0.4 INT8: model-defined rolling window → quantized Noodle prediction → validation-selected confidence rejection</div>
         </div>
 
         <div class="panel"><div class="section-head"><div><h2>Status / diagnostics</h2></div><button id="clearLogBtn" class="ghost">Clear</button></div><pre id="log"></pre></div>

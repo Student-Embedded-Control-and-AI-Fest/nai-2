@@ -5,6 +5,8 @@ const MADGWICK_BETA = 0.10;
 const GRAVITY_MPS2 = 9.80665;
 const MAX_PACKAGE_BYTES = 550 * 1024;
 const FLAG_BINARY_CLASSIFIER = 0x0001;
+const FLAG_INT8 = 0x0002;
+const QCFG_MAGIC = 'Q8M1';
 
 const REP = {
   'accel': { code: 1, channels: 3 },
@@ -584,7 +586,7 @@ async function predictTf(model, standardizedRows, nClasses) {
 
 
 // ---------------------------------------------------------------------------
-// Binary NAI4 writer / reader
+// Binary NAI4 writer / reader + Mode 2 INT8 PTQ
 // ---------------------------------------------------------------------------
 
 function float32LE(values) {
@@ -597,19 +599,107 @@ function readFloat32LE(bytes) {
   for(let i=0;i<out.length;i++)out[i]=dv.getFloat32(i*4,true);
   return out;
 }
+function int32LE(values) {
+  const out=new ArrayBuffer(values.length*4),dv=new DataView(out);
+  for(let i=0;i<values.length;i++)dv.setInt32(i*4,Number(values[i]),true);
+  return new Uint8Array(out);
+}
+function readInt32LE(bytes) {
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength), out=new Int32Array(bytes.byteLength/4);
+  for(let i=0;i<out.length;i++)out[i]=dv.getInt32(i*4,true);
+  return out;
+}
+function int8Bytes(values) {
+  const out=new Uint8Array(values.length);
+  for(let i=0;i<values.length;i++)out[i]=Number(values[i])&0xff;
+  return out;
+}
+function readInt8(bytes) {
+  const out=new Int8Array(bytes.length);
+  for(let i=0;i<bytes.length;i++)out[i]=bytes[i]>127?bytes[i]-256:bytes[i];
+  return out;
+}
 
-function makeCfg(labels,N,inputDim,dims,rep,binary) {
+function roundEven(x) {
+  if(!Number.isFinite(x)) return 0;
+  const f=Math.floor(x), r=x-f;
+  if(r<0.5)return f;
+  if(r>0.5)return f+1;
+  return (f%2===0)?f:f+1;
+}
+function clampI8(x){return x>127?127:(x<-128?-128:x);}
+function clampI32(x){return x>2147483647?2147483647:(x<-2147483648?-2147483648:Math.trunc(x));}
+function qFloat(x,scale,zp){return clampI8(roundEven(x/scale)+zp);}
+
+// Mirrors noodle_quantize_multiplier() in noodle_int8_math.cpp.
+function quantizeMultiplier(realMultiplier) {
+  if(!(realMultiplier>=0)||!Number.isFinite(realMultiplier))throw new Error('Invalid quantized multiplier');
+  if(realMultiplier===0)return {multiplier:0,shift:0};
+  let exp=Math.floor(Math.log2(realMultiplier))+1;
+  let q=realMultiplier/Math.pow(2,exp); // [0.5,1)
+  let qFixed=Math.round(q*2147483648);
+  if(qFixed===2147483648){qFixed/=2;exp+=1;}
+  if(exp<-31)return {multiplier:0,shift:0};
+  if(exp>30)throw new Error('Quantized multiplier exponent overflow');
+  return {multiplier:qFixed,shift:exp};
+}
+function satRoundHighMul(a,b) {
+  const ab=BigInt(Math.trunc(a))*BigInt(Math.trunc(b));
+  const one=1n<<30n;
+  const nudge=ab>=0n?one:(1n-one);
+  return Number((ab+nudge)/(1n<<31n));
+}
+function roundingDivideByPot(x,exp) {
+  if(exp<=0)return Math.trunc(x);
+  if(exp>31)return x<0?-1:0;
+  const xb=BigInt(Math.trunc(x));
+  const mask=(1n<<BigInt(exp))-1n;
+  const remainder=xb&mask;
+  const threshold=(mask>>1n)+(x<0?1n:0n);
+  return Number((xb>>BigInt(exp))+(remainder>threshold?1n:0n));
+}
+function multiplyByQuantizedMultiplier(x,multiplier,shift) {
+  const left=shift>0?shift:0, right=shift>0?0:-shift;
+  let shifted;
+  if(left>=31)shifted=x>=0?2147483647:-2147483648;
+  else shifted=clampI32(Math.trunc(x)*Math.pow(2,left));
+  const high=satRoundHighMul(shifted,multiplier);
+  return roundingDivideByPot(high,right);
+}
+function applyRequant(acc,mult,shift,zp,amin=-128,amax=127) {
+  let q=multiplyByQuantizedMultiplier(acc,mult,shift)+zp;
+  if(q<amin)q=amin;if(q>amax)q=amax;
+  return clampI8(q);
+}
+
+function makeCfg(labels,N,inputDim,dims,rep,binary,quant=null) {
   const enc=new TextEncoder();
   const labelBytes=labels.map(s=>enc.encode(String(s)));
   for(const b of labelBytes)if(!b.length||b.length>31)throw new Error('NAI labels must be 1..31 UTF-8 bytes');
-  const total=20 + 2*dims.length + labelBytes.reduce((s,b)=>s+1+b.length,0);
+  const quantBytes=quant ? (28 + 8*(dims.length-1)) : 0;
+  const total=20 + 2*dims.length + labelBytes.reduce((s,b)=>s+1+b.length,0) + quantBytes;
   const out=new Uint8Array(total),dv=new DataView(out.buffer);
   out.set([0x4e,0x41,0x49,0x34],0); // NAI4
   let o=4;
-  const vals=[4,binary?FLAG_BINARY_CLASSIFIER:0,N,SAMPLE_RATE_HZ,dims.length-1,labels.length,inputDim,REP[rep].code];
+  const flags=(binary?FLAG_BINARY_CLASSIFIER:0)|(quant?FLAG_INT8:0);
+  const vals=[4,flags,N,SAMPLE_RATE_HZ,dims.length-1,labels.length,inputDim,REP[rep].code];
   vals.forEach(v=>{dv.setUint16(o,v,true);o+=2;});
   dims.forEach(v=>{dv.setUint16(o,v,true);o+=2;});
   for(const b of labelBytes){out[o++]=b.length;out.set(b,o);o+=b.length;}
+  if(quant){
+    out.set(new TextEncoder().encode(QCFG_MAGIC),o);o+=4;
+    dv.setUint16(o,quant.strideSamples,true);o+=2;
+    dv.setUint16(o,0,true);o+=2;
+    dv.setFloat32(o,quant.thresholdMin,true);o+=4;
+    dv.setFloat32(o,quant.thresholdMax,true);o+=4;
+    dv.setFloat32(o,quant.confidenceThreshold,true);o+=4;
+    dv.setFloat32(o,quant.inputScale,true);o+=4;
+    dv.setInt32(o,quant.inputZeroPoint,true);o+=4;
+    quant.layers.forEach(q=>{
+      dv.setFloat32(o,q.outputScale,true);o+=4;
+      dv.setInt32(o,q.outputZeroPoint,true);o+=4;
+    });
+  }
   return out;
 }
 
@@ -629,25 +719,169 @@ async function extractTfWeightsOI(model) {
   return layers;
 }
 
-async function exportNai4(model,scaler,labels,N,rep) {
-  const layers=await extractTfWeightsOI(model);
-  const dims=[layers[0].I,...layers.map(l=>l.O)];
+function maxAbsRows(rows){
+  let m=0;
+  for(const r of rows)for(let i=0;i<r.length;i++){const a=Math.abs(r[i]);if(a>m)m=a;}
+  return m;
+}
+function maxRows(rows){
+  let m=0;
+  for(const r of rows)for(let i=0;i<r.length;i++)if(r[i]>m)m=r[i];
+  return m;
+}
+function denseFloatRows(rows,layer,relu){
+  const out=new Array(rows.length);
+  for(let n=0;n<rows.length;n++){
+    const a=rows[n],z=new Float32Array(layer.O);
+    for(let o=0;o<layer.O;o++){
+      let s=layer.b[o],base=o*layer.I;
+      for(let i=0;i<layer.I;i++)s+=layer.w[base+i]*a[i];
+      z[o]=relu&&s<0?0:s;
+    }
+    out[n]=z;
+  }
+  return out;
+}
+
+function calibrateActivationQParams(floatLayers,calibrationRows){
+  if(!calibrationRows.length)throw new Error('INT8 calibration needs training rows');
+  const activations=[];
+  const inMax=maxAbsRows(calibrationRows);
+  activations.push({scale:Math.max(inMax/127,1e-12),zeroPoint:0});
+  let rows=calibrationRows;
+  for(let li=0;li<floatLayers.length;li++){
+    const hidden=li<floatLayers.length-1;
+    rows=denseFloatRows(rows,floatLayers[li],hidden);
+    if(hidden){
+      const hi=maxRows(rows);
+      activations.push({scale:Math.max(hi/255,1e-12),zeroPoint:-128});
+    }else{
+      const ma=maxAbsRows(rows);
+      activations.push({scale:Math.max(ma/127,1e-12),zeroPoint:0});
+    }
+  }
+  return activations;
+}
+
+function quantizeDenseLayers(floatLayers,activations){
+  return floatLayers.map((l,li)=>{
+    const qW=new Int8Array(l.O*l.I),qB=new Int32Array(l.O),mult=new Int32Array(l.O),shift=new Int32Array(l.O);
+    const weightScale=new Float64Array(l.O);
+    const inScale=activations[li].scale,outScale=activations[li+1].scale;
+    for(let o=0;o<l.O;o++){
+      let ma=0,base=o*l.I;
+      for(let i=0;i<l.I;i++){const a=Math.abs(l.w[base+i]);if(a>ma)ma=a;}
+      const ws=Math.max(ma/127,1e-12);weightScale[o]=ws;
+      for(let i=0;i<l.I;i++)qW[base+i]=clampI8(roundEven(l.w[base+i]/ws));
+      qB[o]=clampI32(roundEven(l.b[o]/(inScale*ws)));
+      const qm=quantizeMultiplier(inScale*ws/outScale);
+      mult[o]=qm.multiplier;shift[o]=qm.shift;
+    }
+    return {I:l.I,O:l.O,w:qW,b:qB,mult,shift,
+      inputScale:activations[li].scale,inputZeroPoint:activations[li].zeroPoint,
+      outputScale:activations[li+1].scale,outputZeroPoint:activations[li+1].zeroPoint};
+  });
+}
+
+function noodleBinaryProbability(q,scale,zp){
+  const x=(q-zp)*scale;
+  const y=x>=0?1/(1+Math.exp(-x)):Math.exp(x)/(1+Math.exp(x));
+  const pi=Math.max(0,Math.min(255,Math.round(y*256)));
+  return pi/256;
+}
+function noodleSoftmaxProbabilities(qrow,scale){
+  let maxq=qrow[0];for(let i=1;i<qrow.length;i++)if(qrow[i]>maxq)maxq=qrow[i];
+  const lut=new Uint16Array(256);
+  for(let d=0;d<256;d++)lut[d]=Math.max(0,Math.min(32767,Math.round(Math.exp(-d*scale)*32767)));
+  let sum=0;const e=new Uint16Array(qrow.length);
+  for(let i=0;i<qrow.length;i++){const d=(maxq-qrow[i])&255;e[i]=lut[d];sum+=e[i];}
+  const p=new Array(qrow.length);
+  for(let i=0;i<qrow.length;i++){let pi=Math.floor((e[i]*256+Math.floor(sum/2))/sum);if(pi>255)pi=255;p[i]=pi/256;}
+  return p;
+}
+
+function predictQuantized(qmodel,standardizedRows,nClasses){
+  const probs=[],pred=[];
+  for(const row of standardizedRows){
+    let a=new Int16Array(row.length);
+    const aq=qmodel.activations[0];
+    for(let i=0;i<row.length;i++)a[i]=qFloat(row[i],aq.scale,aq.zeroPoint);
+    qmodel.layers.forEach((l,li)=>{
+      const z=new Int16Array(l.O),hidden=li<qmodel.layers.length-1;
+      const amin=hidden?l.outputZeroPoint:-128;
+      for(let o=0;o<l.O;o++){
+        let acc=l.b[o],base=o*l.I;
+        for(let i=0;i<l.I;i++)acc+=(a[i]-l.inputZeroPoint)*l.w[base+i];
+        z[o]=applyRequant(clampI32(acc),l.mult[o],l.shift[o],l.outputZeroPoint,amin,127);
+      }
+      a=z;
+    });
+    let p;
+    const final=qmodel.activations[qmodel.activations.length-1];
+    if(nClasses===2){const p1=noodleBinaryProbability(a[0],final.scale,final.zeroPoint);p=[1-p1,p1];}
+    else p=noodleSoftmaxProbabilities(a,final.scale);
+    probs.push(p);pred.push(argmaxRow(p));
+  }
+  return {probs,pred};
+}
+
+function sweepConfidenceThreshold(probs,y,{min=0.30,max=0.90,step=0.01,minCoverage=0.90}={}){
+  const rows=[];
+  const pred=probs.map(argmaxRow),conf=probs.map(p=>Math.max(...p));
+  const n=y.length;
+  for(let k=0;;k++){
+    const t=Number((min+k*step).toFixed(6));if(t>max+1e-9)break;
+    let accepted=0,correct=0;
+    for(let i=0;i<n;i++)if(conf[i]>=t){accepted++;if(pred[i]===y[i])correct++;}
+    rows.push({threshold:t,coverage:accepted/n,acceptedAccuracy:accepted?correct/accepted:0,accepted,correct});
+  }
+  const eligible=rows.filter(r=>r.coverage+1e-12>=minCoverage&&r.accepted>0);
+  const pool=eligible.length?eligible:rows.filter(r=>r.accepted>0);
+  let selected=pool[0];
+  for(const r of pool.slice(1)){
+    if(r.acceptedAccuracy>selected.acceptedAccuracy+1e-12 ||
+       (Math.abs(r.acceptedAccuracy-selected.acceptedAccuracy)<=1e-12 && r.threshold>selected.threshold))selected=r;
+  }
+  return {rows,selected,min,max,step,minCoverage};
+}
+
+async function exportNai4Int8(model,scaler,labels,N,rep,calibrationRows,validationRows,validationY,strideSamples=5) {
+  const floatLayers=await extractTfWeightsOI(model);
+  if(floatLayers.length>4)throw new Error('Current single-slot INT8 deployment supports at most 4 Dense layers (3 hidden + output): 3 base files + 4 files per layer must fit the 19-file slot header.');
+  const dims=[floatLayers[0].I,...floatLayers.map(l=>l.O)];
   const binary=labels.length===2;
+  const activations=calibrateActivationQParams(floatLayers,calibrationRows);
+  const qLayers=quantizeDenseLayers(floatLayers,activations);
+  const qmodel={activations,layers:qLayers};
+  const qva=predictQuantized(qmodel,validationRows,labels.length);
+  const qValAcc=accuracy(qva.pred,Array.from(validationY));
+  const sweep=sweepConfidenceThreshold(qva.probs,Array.from(validationY),{min:0.30,max:0.90,step:0.01,minCoverage:0.90});
+  const quant={
+    strideSamples,
+    thresholdMin:sweep.min,
+    thresholdMax:sweep.max,
+    confidenceThreshold:sweep.selected.threshold,
+    inputScale:activations[0].scale,
+    inputZeroPoint:activations[0].zeroPoint,
+    layers:qLayers.map(l=>({outputScale:l.outputScale,outputZeroPoint:l.outputZeroPoint})),
+  };
   const files={
-    'cfg.bin':makeCfg(labels,N,dims[0],dims,rep,binary),
+    'cfg.bin':makeCfg(labels,N,dims[0],dims,rep,binary,quant),
     'mean.bin':float32LE(scaler.mean),
     'scale.bin':float32LE(scaler.scale),
   };
-  layers.forEach((l,i)=>{
-    files[`w${String(i).padStart(2,'0')}.bin`]=float32LE(l.w);
-    files[`b${String(i).padStart(2,'0')}.bin`]=float32LE(l.b);
+  qLayers.forEach((l,i)=>{
+    const n=String(i).padStart(2,'0');
+    files[`w${n}.bin`]=int8Bytes(l.w);
+    files[`b${n}.bin`]=int32LE(l.b);
+    files[`m${n}.bin`]=int32LE(l.mult);
+    files[`s${n}.bin`]=int32LE(l.shift);
   });
   const total=Object.values(files).reduce((s,b)=>s+b.byteLength,0);
   if(total>MAX_PACKAGE_BYTES)throw new Error(`Raw NAI4 package ${(total/1024).toFixed(1)} KiB exceeds 550 KiB`);
-  const zip=new JSZip();
-  Object.entries(files).forEach(([name,bytes])=>zip.file(name,bytes));
+  const zip=new JSZip();Object.entries(files).forEach(([name,bytes])=>zip.file(name,bytes));
   const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
-  return {files,total,blob,layers,dims,binary,rep,labels,N,scaler};
+  return {files,total,blob,dims,binary,rep,labels,N,scaler,int8:true,quant,qmodel,qValAcc,sweep};
 }
 
 function parseCfg(bytes) {
@@ -657,24 +891,34 @@ function parseCfg(bytes) {
   const v=[];for(let i=0;i<8;i++){v.push(dv.getUint16(o,true));o+=2;}
   const [version,flags,N,rate,nLayers,nClasses,inputDim,reserved]=v;
   if(!['NAI2','NAI3','NAI4'].includes(magic))throw new Error(`Unsupported NAI magic ${magic}`);
-  let rep;
-  if(magic==='NAI2')rep='accel';
-  else if(magic==='NAI3')rep=CODE_TO_REP[reserved]||null;
-  else rep=CODE_TO_REP[reserved]||null;
+  let rep;if(magic==='NAI2')rep='accel';else rep=CODE_TO_REP[reserved]||null;
   if(!rep)throw new Error(`Unknown representation code ${reserved}`);
   const dims=[];for(let i=0;i<nLayers+1;i++){dims.push(dv.getUint16(o,true));o+=2;}
   const dec=new TextDecoder('utf-8'),labels=[];
   for(let i=0;i<nClasses;i++){const n=bytes[o++];labels.push(dec.decode(bytes.slice(o,o+n)));o+=n;}
-  return {magic,version,flags,N,rate,nLayers,nClasses,inputDim,rep,dims,labels,binary:!!(flags&FLAG_BINARY_CLASSIFIER)};
+  const int8=!!(flags&FLAG_INT8);let quant=null;
+  if(int8){
+    if(o+28+8*nLayers>bytes.length)throw new Error('Truncated NAI4 INT8 config');
+    const qmagic=new TextDecoder().decode(bytes.slice(o,o+4));o+=4;
+    if(qmagic!==QCFG_MAGIC)throw new Error(`Unknown INT8 config ${qmagic}`);
+    const strideSamples=dv.getUint16(o,true);o+=2;o+=2;
+    const thresholdMin=dv.getFloat32(o,true);o+=4;
+    const thresholdMax=dv.getFloat32(o,true);o+=4;
+    const confidenceThreshold=dv.getFloat32(o,true);o+=4;
+    const inputScale=dv.getFloat32(o,true);o+=4;
+    const inputZeroPoint=dv.getInt32(o,true);o+=4;
+    const layers=[];for(let i=0;i<nLayers;i++){const outputScale=dv.getFloat32(o,true);o+=4;const outputZeroPoint=dv.getInt32(o,true);o+=4;layers.push({outputScale,outputZeroPoint});}
+    quant={strideSamples,thresholdMin,thresholdMax,confidenceThreshold,inputScale,inputZeroPoint,layers};
+  }
+  if(o!==bytes.length)throw new Error(`Unexpected cfg.bin trailing bytes (${bytes.length-o})`);
+  return {magic,version,flags,N,rate,nLayers,nClasses,inputDim,rep,dims,labels,binary:!!(flags&FLAG_BINARY_CLASSIFIER),int8,quant};
 }
 
 async function loadNai(file) {
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
-  const get=async name=>{
-    const e=zip.file(name);if(!e)throw new Error(`NAI missing ${name}`);
-    return new Uint8Array(await e.async('arraybuffer'));
-  };
+  const get=async name=>{const e=zip.file(name);if(!e)throw new Error(`NAI missing ${name}`);return new Uint8Array(await e.async('arraybuffer'));};
   const cfg=parseCfg(await get('cfg.bin'));
+  if(cfg.int8)throw new Error('Browser loadNai() float predictor does not open INT8 packages; use loadNaiPackage() for deployment.');
   const mean=readFloat32LE(await get('mean.bin')),scale=readFloat32LE(await get('scale.bin'));
   const layers=[];
   for(let i=0;i<cfg.nLayers;i++){
@@ -687,72 +931,29 @@ async function loadNai(file) {
   return {...cfg,mean,scale,layers,fileName:file.name};
 }
 
-
 async function loadNaiPackage(file) {
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
-
-  const get=async name=>{
-    const e=zip.file(name);
-    if(!e)throw new Error(`NAI missing ${name}`);
-    return new Uint8Array(await e.async('arraybuffer'));
-  };
-
-  const cfgBytes=await get('cfg.bin');
-  const cfg=parseCfg(cfgBytes);
-
+  const get=async name=>{const e=zip.file(name);if(!e)throw new Error(`NAI missing ${name}`);return new Uint8Array(await e.async('arraybuffer'));};
+  const cfgBytes=await get('cfg.bin'),cfg=parseCfg(cfgBytes);
   const names=['cfg.bin','mean.bin','scale.bin'];
-
   for(let i=0;i<cfg.nLayers;i++){
-    names.push(`w${String(i).padStart(2,'0')}.bin`);
-    names.push(`b${String(i).padStart(2,'0')}.bin`);
+    const n=String(i).padStart(2,'0');names.push(`w${n}.bin`,`b${n}.bin`);if(cfg.int8)names.push(`m${n}.bin`,`s${n}.bin`);
   }
-
-  const files={};
-  for(const name of names) files[name]=await get(name);
-
+  const files={};for(const name of names)files[name]=await get(name);
   const total=Object.values(files).reduce((s,b)=>s+b.byteLength,0);
-
-  return {
-    files,
-    total,
-    blob:file,
-    rep:cfg.rep,
-    labels:[...cfg.labels],
-    N:cfg.N,
-    inputDim:cfg.inputDim,
-    dims:[...cfg.dims],
-    binary:cfg.binary,
-    cfg,
-  };
+  return {files,total,blob:file,rep:cfg.rep,labels:[...cfg.labels],N:cfg.N,inputDim:cfg.inputDim,dims:[...cfg.dims],binary:cfg.binary,int8:cfg.int8,quant:cfg.quant,cfg};
 }
 
 function predictNai(nai, rows) {
   const probs=[],pred=[];
   for(const raw of rows){
-    let a=new Float64Array(nai.inputDim);
-    for(let i=0;i<a.length;i++)a[i]=(raw[i]-nai.mean[i])/nai.scale[i];
-    nai.layers.forEach((l,li)=>{
-      const z=new Float64Array(l.O);
-      for(let o=0;o<l.O;o++){
-        let s=l.b[o],base=o*l.I;
-        for(let i=0;i<l.I;i++)s+=l.w[base+i]*a[i];
-        z[o]=s;
-      }
-      if(li<nai.layers.length-1){for(let o=0;o<z.length;o++)if(z[o]<0)z[o]=0;}
-      a=z;
-    });
-    let p;
-    if(nai.binary){
-      const p1=a[0]>=0?1/(1+Math.exp(-a[0])):Math.exp(a[0])/(1+Math.exp(a[0]));
-      p=[1-p1,p1];
-    }else{
-      const m=Math.max(...a),e=Array.from(a,v=>Math.exp(v-m)),s=e.reduce((x,y)=>x+y,0);p=e.map(v=>v/s);
-    }
+    let a=new Float64Array(nai.inputDim);for(let i=0;i<a.length;i++)a[i]=(raw[i]-nai.mean[i])/nai.scale[i];
+    nai.layers.forEach((l,li)=>{const z=new Float64Array(l.O);for(let o=0;o<l.O;o++){let s=l.b[o],base=o*l.I;for(let i=0;i<l.I;i++)s+=l.w[base+i]*a[i];z[o]=s;}if(li<nai.layers.length-1){for(let o=0;o<z.length;o++)if(z[o]<0)z[o]=0;}a=z;});
+    let p;if(nai.binary){const p1=a[0]>=0?1/(1+Math.exp(-a[0])):Math.exp(a[0])/(1+Math.exp(a[0]));p=[1-p1,p1];}else{const m=Math.max(...a),e=Array.from(a,v=>Math.exp(v-m)),s=e.reduce((x,y)=>x+y,0);p=e.map(v=>v/s);}
     probs.push(p);pred.push(argmaxRow(p));
   }
   return {probs,pred};
 }
-
 
 // ---------------------------------------------------------------------------
 // NPY / NPZ writer for Python-compatible NAI4 datasets
@@ -863,6 +1064,7 @@ window.NAI = Object.freeze({
   sklearnStratifiedSplit, buildRepresentationDataset,
   fitScaler, standardizeRows, flattenRows,
   makeModel, predictTf, accuracy,
-  exportNai4, loadNai, loadNaiPackage, predictNai,
-  _internals:Object.freeze({makeNpyHeader,npyF32,npyI32,npyUnicode,parseNpy,MT19937,makeCfg,parseCfg}),
+  exportNai4Int8, loadNai, loadNaiPackage, predictNai,
+  predictQuantized, sweepConfidenceThreshold,
+  _internals:Object.freeze({makeNpyHeader,npyF32,npyI32,npyUnicode,parseNpy,MT19937,makeCfg,parseCfg,quantizeMultiplier,multiplyByQuantizedMultiplier}),
 });

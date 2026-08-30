@@ -1,0 +1,21 @@
+NoodleAI Web Mode 2 v0.5 — INT8 + threshold sweep
+=================================================
+
+Training pipeline:
+  Float32 TF.js MLP
+  -> activation calibration on training split
+  -> per-output-channel symmetric INT8 weights
+  -> INT32 biases
+  -> Noodle multiplier/shift generation
+  -> exact Noodle-style INT8 validation
+  -> confidence sweep 0.30..0.90, step 0.01
+  -> require >=90% validation coverage
+  -> maximize accepted accuracy; tie = higher threshold
+  -> write selected threshold + stride into NAI4 cfg.bin (Q8M1 extension)
+
+The threshold curve is shown under Training Curves.
+
+Current four-layer example 600->64->32->16->1 should shrink from roughly
+165 KiB Float32 raw parameters to roughly 46 KiB INT8 raw package.
+
+Firmware pairing: Mode 2 v0.4 INT8.
