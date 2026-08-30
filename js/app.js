@@ -313,8 +313,9 @@ async function trainModel(){
     if(state.model){try{state.model.dispose();}catch(_){}}state.model=model;state.scaler=scaler;state.pkg=pkg;state.history=hist;state.thresholdSweep=pkg.sweep;state.trainedRep=rep;state.modelLabels=[...state.labels];
     const q=pkg.sweep.selected;
     $('trainResult').textContent=`Float val ${pct(valAcc)} · INT8 val ${pct(pkg.qValAcc)} · T=${q.threshold.toFixed(2)} · ${(pkg.total/1024).toFixed(1)} KiB`;
-    $('quantResult').textContent=`INT8 PTQ complete · validation ${pct(pkg.qValAcc)} · threshold sweep 0.30–0.90 selected ${q.threshold.toFixed(2)} · accepted accuracy ${pct(q.acceptedAccuracy)} · coverage ${pct(q.coverage)} · stride ${stride} samples · raw package ${(pkg.total/1024).toFixed(1)} KiB.`;
-    $('curveSummary').textContent=`Finished ${epochs} epochs · float validation ${pct(valAcc)} · INT8 validation ${pct(pkg.qValAcc)} · selected threshold ${q.threshold.toFixed(2)}`;$('saveModelBtn').disabled=false;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!noodleBLE.connected;drawTrainingCurves(hist);drawThresholdSweep(pkg.sweep);log(`Training + INT8 complete: ${REP_LABEL[rep]}, topology ${pkg.dims.join('→')}, float validation=${pct(valAcc)}, INT8 validation=${pct(pkg.qValAcc)}, threshold=${q.threshold.toFixed(2)}, coverage=${pct(q.coverage)}, NAI4 INT8=${(pkg.total/1024).toFixed(1)} KiB.`);switchTab('dataset');
+    const f=pkg.filter;const fdesc=(f.flags&NAI.FILTER_HP)?`${f.highpassHz.toFixed(2)}–${f.lowpassHz.toFixed(1)} Hz band-pass`:`${f.lowpassHz.toFixed(1)} Hz low-pass`;
+    $('quantResult').textContent=`INT8 PTQ complete · ${fdesc} · validation ${pct(pkg.qValAcc)} · threshold sweep 0.30–0.90 selected ${q.threshold.toFixed(2)} · accepted accuracy ${pct(q.acceptedAccuracy)} · coverage ${pct(q.coverage)} · stride ${stride} samples · raw package ${(pkg.total/1024).toFixed(1)} KiB.`;
+    $('curveSummary').textContent=`Finished ${epochs} epochs · float validation ${pct(valAcc)} · INT8 validation ${pct(pkg.qValAcc)} · selected threshold ${q.threshold.toFixed(2)}`;$('saveModelBtn').disabled=false;$('deployBtn').disabled=!MODE2_DEPLOY_SUPPORTED||!noodleBLE.connected;drawTrainingCurves(hist);drawThresholdSweep(pkg.sweep);log(`Training + INT8 complete: ${REP_LABEL[rep]}, ${fdesc}, topology ${pkg.dims.join('→')}, float validation=${pct(valAcc)}, INT8 validation=${pct(pkg.qValAcc)}, threshold=${q.threshold.toFixed(2)}, coverage=${pct(q.coverage)}, NAI4 INT8=${(pkg.total/1024).toFixed(1)} KiB.`);switchTab('dataset');
   }catch(e){alert(e.message);log(`Training ERROR: ${e.message}`);}finally{$('trainBtn').disabled=!(state.setupLocked&&state.targets.length);}
 }
 $('trainBtn').addEventListener('click',trainModel);
@@ -326,7 +327,7 @@ $('deployNaiFile').addEventListener('change',async e=>{
 
     const pkg=await NAI.loadNaiPackage(file);
 
-    if(!pkg.int8)throw new Error('This is a Float32 NAI4 package. Mode 2 v0.4 firmware expects the new INT8 NAI4 package; load the dataset and Train + INT8 calibrate first.');
+    if(!pkg.int8)throw new Error('This is a Float32 NAI4 package. Mode 2 v0.4.5 firmware expects the new INT8 NAI4 package; load the dataset and Train + INT8 calibrate first.');
     state.pkg=pkg;
     state.trainedRep=pkg.rep;
     state.modelLabels=[...pkg.labels];
@@ -336,7 +337,8 @@ $('deployNaiFile').addEventListener('change',async e=>{
 
     $('deployText').textContent=
       `Loaded ${file.name}: ${(pkg.total/1024).toFixed(1)} KiB · `+
-      `${pkg.N} samples · ${pkg.inputDim} inputs · ${pkg.labels.length} classes · INT8 · threshold ${pkg.quant.confidenceThreshold.toFixed(2)} · stride ${pkg.quant.strideSamples}. Ready to deploy.`;
+      `${pkg.N} samples · ${pkg.inputDim} inputs · ${pkg.labels.length} classes · INT8 · threshold ${pkg.quant.confidenceThreshold.toFixed(2)} · stride ${pkg.quant.strideSamples}`+
+      `${pkg.filter?` · filter ${(pkg.filter.flags&NAI.FILTER_HP)?`${pkg.filter.highpassHz.toFixed(2)}–${pkg.filter.lowpassHz.toFixed(1)} Hz BP`:`${pkg.filter.lowpassHz.toFixed(1)} Hz LP`}`:' · legacy preprocessing'}. Ready to deploy.`;
 
     log(`Loaded deployable NAI4 INT8 package ${file.name}: ${pkg.dims.join('→')}, threshold=${pkg.quant.confidenceThreshold.toFixed(2)}, stride=${pkg.quant.strideSamples}, ${(pkg.total/1024).toFixed(1)} KiB.`);
   }catch(err){

@@ -110,4 +110,9 @@ continuous sessions, then click **Lock setup** again. Existing samples are
 preserved. The window length remains fixed for dimensional consistency.
 
 
-Mode 2 v0.4 pairs with M0Sense firmware v0.3 for continuous device-side Noodle inference.
+Mode 2 v0.6 pairs with M0Sense firmware v0.4.5 for filtered, continuous device-side Noodle INT8 inference.
+
+
+## v0.6 model-defined filtering
+
+New NAI4 INT8 packages append an `FLT1` record to `cfg.bin`. Direct accel/gyro representations use a 0.10–8 Hz first-order band-pass. Quaternion/velocity representations use an 8 Hz first-order low-pass before Madgwick and never high-pass gravity/orientation inputs.

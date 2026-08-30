@@ -7,6 +7,11 @@ const MAX_PACKAGE_BYTES = 550 * 1024;
 const FLAG_BINARY_CLASSIFIER = 0x0001;
 const FLAG_INT8 = 0x0002;
 const QCFG_MAGIC = 'Q8M1';
+const FILTER_MAGIC = 'FLT1';
+const FILTER_HP = 0x0001;
+const FILTER_LP = 0x0002;
+const DEFAULT_HP_HZ = 0.10;
+const DEFAULT_LP_HZ = 8.00;
 
 const REP = {
   'accel': { code: 1, channels: 3 },
@@ -322,6 +327,36 @@ function centerColumns(data, rows, cols) {
   return out;
 }
 
+function filterConfigForRepresentation(rep) {
+  if (rep==='accel'||rep==='gyro'||rep==='accel+gyro') {
+    return {flags:FILTER_HP|FILTER_LP, highpassHz:DEFAULT_HP_HZ, lowpassHz:DEFAULT_LP_HZ};
+  }
+  return {flags:FILTER_LP, highpassHz:0.0, lowpassHz:DEFAULT_LP_HZ};
+}
+
+function firstOrderFilterColumns(data, rows, cols, sampleRate, filter) {
+  const out=new Float32Array(rows*cols);
+  if (!rows || !cols) return out;
+  const dt=1/sampleRate;
+  const hpOn=!!(filter.flags&FILTER_HP);
+  const lpOn=!!(filter.flags&FILTER_LP);
+  const hpAlpha=hpOn ? (1/(2*Math.PI*filter.highpassHz))/((1/(2*Math.PI*filter.highpassHz))+dt) : 0;
+  const lpBeta=lpOn ? dt/((1/(2*Math.PI*filter.lowpassHz))+dt) : 0;
+  for(let c=0;c<cols;c++){
+    let xPrev=data[c], hpPrev=0, lpPrev=0;
+    let v=hpOn?0:xPrev;
+    if(lpOn){lpPrev=v;v=lpPrev;}
+    out[c]=v;
+    for(let r=1;r<rows;r++){
+      const x=data[r*cols+c];
+      if(hpOn){const hp=hpAlpha*(hpPrev+x-xPrev);xPrev=x;hpPrev=hp;v=hp;}else v=x;
+      if(lpOn){lpPrev += lpBeta*(v-lpPrev);v=lpPrev;}
+      out[r*cols+c]=v;
+    }
+  }
+  return out;
+}
+
 function qNorm(q) {
   const n = Math.hypot(q[0],q[1],q[2],q[3]);
   if (!Number.isFinite(n) || n < 1e-12) return [1,0,0,0];
@@ -389,8 +424,9 @@ function madgwickUpdateImu(q, accel, gyroDps, dt, beta=MADGWICK_BETA) {
   return qNorm(q.map((v,i)=>v+qdot[i]*dt));
 }
 
-function deriveQuatVelocity(rawObj, sampleRate=SAMPLE_RATE_HZ) {
-  const raw=rawObj.data, T=rawObj.length, dt=1/sampleRate;
+function deriveQuatVelocity(rawObj, sampleRate=SAMPLE_RATE_HZ, filter=null) {
+  const T=rawObj.length, dt=1/sampleRate;
+  const raw=filter ? firstOrderFilterColumns(rawObj.data,T,6,sampleRate,filter) : rawObj.data;
   const get3=(k,o)=>[raw[k*6+o],raw[k*6+o+1],raw[k*6+o+2]];
   let qAbs=quatAlignAccelToWorldZ(get3(0,0));
   const qRef=qAbs.slice();
@@ -434,38 +470,44 @@ function normalizeQuatRows(data, rows, offset=0, stride=4) {
 function buildRepresentationOne(ds, sampleIndex, rep) {
   const N=ds.N;
   if (!REP[rep]) throw new Error(`Unknown representation ${rep}`);
+  const filter=filterConfigForRepresentation(rep);
 
   if (ds.rawRows) {
     const rawObj=ds.rawRows[sampleIndex];
-    const raw=rawObj.data, T=rawObj.length;
+    /*
+     * Device inference always owns exactly N chronological 50-Hz raw samples.
+     * Normalize the browser raw window to the same geometry before filtering so
+     * training and deployment execute the same signal path.
+     */
+    const rawN={data:resample(rawObj.data,rawObj.length,6,N),length:N};
     if (rep==='accel'||rep==='gyro'||rep==='accel+gyro') {
       const idx = rep==='accel' ? [0,1,2] : rep==='gyro' ? [3,4,5] : [0,1,2,3,4,5];
-      const selected=new Float32Array(T*idx.length);
-      for (let r=0;r<T;r++) for (let c=0;c<idx.length;c++) selected[r*idx.length+c]=raw[r*6+idx[c]];
-      return centerColumns(resample(selected,T,idx.length,N),N,idx.length);
+      const selected=new Float32Array(N*idx.length);
+      for (let r=0;r<N;r++) for (let c=0;c<idx.length;c++) selected[r*idx.length+c]=rawN.data[r*6+idx[c]];
+      return firstOrderFilterColumns(selected,N,idx.length,SAMPLE_RATE_HZ,filter);
     }
-    const d=deriveQuatVelocity(rawObj,ds.sampleRate);
-    if (rep==='quaternion') return normalizeQuatRows(resample(d.quat,d.T,4,N),N);
-    if (rep==='velocity') return resample(d.vel,d.T,3,N);
-    const both=new Float32Array(d.T*7);
-    for (let r=0;r<d.T;r++) {
+    const d=deriveQuatVelocity(rawN,SAMPLE_RATE_HZ,filter);
+    if (rep==='quaternion') return normalizeQuatRows(d.quat,N);
+    if (rep==='velocity') return d.vel;
+    const both=new Float32Array(N*7);
+    for (let r=0;r<N;r++) {
       both[r*7]=d.vel[r*3]; both[r*7+1]=d.vel[r*3+1]; both[r*7+2]=d.vel[r*3+2];
       both[r*7+3]=d.quat[r*4]; both[r*7+4]=d.quat[r*4+1];
       both[r*7+5]=d.quat[r*4+2]; both[r*7+6]=d.quat[r*4+3];
     }
-    return normalizeQuatRows(resample(both,d.T,7,N),N,3,7);
+    return normalizeQuatRows(both,N,3,7);
   }
 
-  // Legacy NAI3 datasets contain the already resampled + per-channel-centered
-  // six-axis vector. Raw sensor representations can still be projected exactly.
+  // Legacy datasets have only fixed N x 6 rows. We can still apply the same
+  // new direct band-pass path; derived motion representations require raw data.
   if (rep==='quaternion'||rep==='velocity'||rep==='velocity+quaternion') {
     throw new Error('This dataset has no raw_data/raw_offsets. Derived quaternion/velocity representations require a fresh NAI4 raw dataset.');
   }
   const src=ds.Xrows[sampleIndex];
   const idx = rep==='accel' ? [0,1,2] : rep==='gyro' ? [3,4,5] : [0,1,2,3,4,5];
-  const out=new Float32Array(N*idx.length);
-  for (let r=0;r<N;r++) for (let c=0;c<idx.length;c++) out[r*idx.length+c]=src[r*6+idx[c]];
-  return out;
+  const selected=new Float32Array(N*idx.length);
+  for (let r=0;r<N;r++) for (let c=0;c<idx.length;c++) selected[r*idx.length+c]=src[r*6+idx[c]];
+  return firstOrderFilterColumns(selected,N,idx.length,SAMPLE_RATE_HZ,filter);
 }
 
 function buildRepresentationDataset(ds, rep) {
@@ -672,12 +714,13 @@ function applyRequant(acc,mult,shift,zp,amin=-128,amax=127) {
   return clampI8(q);
 }
 
-function makeCfg(labels,N,inputDim,dims,rep,binary,quant=null) {
+function makeCfg(labels,N,inputDim,dims,rep,binary,quant=null,filter=null) {
   const enc=new TextEncoder();
   const labelBytes=labels.map(s=>enc.encode(String(s)));
   for(const b of labelBytes)if(!b.length||b.length>31)throw new Error('NAI labels must be 1..31 UTF-8 bytes');
   const quantBytes=quant ? (28 + 8*(dims.length-1)) : 0;
-  const total=20 + 2*dims.length + labelBytes.reduce((s,b)=>s+1+b.length,0) + quantBytes;
+  const filterBytes=filter ? 16 : 0;
+  const total=20 + 2*dims.length + labelBytes.reduce((s,b)=>s+1+b.length,0) + quantBytes + filterBytes;
   const out=new Uint8Array(total),dv=new DataView(out.buffer);
   out.set([0x4e,0x41,0x49,0x34],0); // NAI4
   let o=4;
@@ -699,6 +742,13 @@ function makeCfg(labels,N,inputDim,dims,rep,binary,quant=null) {
       dv.setFloat32(o,q.outputScale,true);o+=4;
       dv.setInt32(o,q.outputZeroPoint,true);o+=4;
     });
+  }
+  if(filter){
+    out.set(new TextEncoder().encode(FILTER_MAGIC),o);o+=4;
+    dv.setUint16(o,filter.flags,true);o+=2;
+    dv.setUint16(o,0,true);o+=2;
+    dv.setFloat32(o,filter.highpassHz,true);o+=4;
+    dv.setFloat32(o,filter.lowpassHz,true);o+=4;
   }
   return out;
 }
@@ -856,6 +906,7 @@ async function exportNai4Int8(model,scaler,labels,N,rep,calibrationRows,validati
   const qva=predictQuantized(qmodel,validationRows,labels.length);
   const qValAcc=accuracy(qva.pred,Array.from(validationY));
   const sweep=sweepConfidenceThreshold(qva.probs,Array.from(validationY),{min:0.30,max:0.90,step:0.01,minCoverage:0.90});
+  const filter=filterConfigForRepresentation(rep);
   const quant={
     strideSamples,
     thresholdMin:sweep.min,
@@ -866,7 +917,7 @@ async function exportNai4Int8(model,scaler,labels,N,rep,calibrationRows,validati
     layers:qLayers.map(l=>({outputScale:l.outputScale,outputZeroPoint:l.outputZeroPoint})),
   };
   const files={
-    'cfg.bin':makeCfg(labels,N,dims[0],dims,rep,binary,quant),
+    'cfg.bin':makeCfg(labels,N,dims[0],dims,rep,binary,quant,filter),
     'mean.bin':float32LE(scaler.mean),
     'scale.bin':float32LE(scaler.scale),
   };
@@ -881,7 +932,7 @@ async function exportNai4Int8(model,scaler,labels,N,rep,calibrationRows,validati
   if(total>MAX_PACKAGE_BYTES)throw new Error(`Raw NAI4 package ${(total/1024).toFixed(1)} KiB exceeds 550 KiB`);
   const zip=new JSZip();Object.entries(files).forEach(([name,bytes])=>zip.file(name,bytes));
   const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
-  return {files,total,blob,dims,binary,rep,labels,N,scaler,int8:true,quant,qmodel,qValAcc,sweep};
+  return {files,total,blob,dims,binary,rep,labels,N,scaler,int8:true,quant,filter,qmodel,qValAcc,sweep};
 }
 
 function parseCfg(bytes) {
@@ -910,8 +961,18 @@ function parseCfg(bytes) {
     const layers=[];for(let i=0;i<nLayers;i++){const outputScale=dv.getFloat32(o,true);o+=4;const outputZeroPoint=dv.getInt32(o,true);o+=4;layers.push({outputScale,outputZeroPoint});}
     quant={strideSamples,thresholdMin,thresholdMax,confidenceThreshold,inputScale,inputZeroPoint,layers};
   }
+  let filter=null;
+  if(o<bytes.length){
+    if(o+16!==bytes.length)throw new Error(`Unexpected cfg.bin trailing bytes (${bytes.length-o})`);
+    const fmagic=new TextDecoder().decode(bytes.slice(o,o+4));o+=4;
+    if(fmagic!==FILTER_MAGIC)throw new Error(`Unknown filter config ${fmagic}`);
+    const fflags=dv.getUint16(o,true);o+=2;o+=2;
+    const highpassHz=dv.getFloat32(o,true);o+=4;
+    const lowpassHz=dv.getFloat32(o,true);o+=4;
+    filter={flags:fflags,highpassHz,lowpassHz};
+  }
   if(o!==bytes.length)throw new Error(`Unexpected cfg.bin trailing bytes (${bytes.length-o})`);
-  return {magic,version,flags,N,rate,nLayers,nClasses,inputDim,rep,dims,labels,binary:!!(flags&FLAG_BINARY_CLASSIFIER),int8,quant};
+  return {magic,version,flags,N,rate,nLayers,nClasses,inputDim,rep,dims,labels,binary:!!(flags&FLAG_BINARY_CLASSIFIER),int8,quant,filter};
 }
 
 async function loadNai(file) {
@@ -941,7 +1002,7 @@ async function loadNaiPackage(file) {
   }
   const files={};for(const name of names)files[name]=await get(name);
   const total=Object.values(files).reduce((s,b)=>s+b.byteLength,0);
-  return {files,total,blob:file,rep:cfg.rep,labels:[...cfg.labels],N:cfg.N,inputDim:cfg.inputDim,dims:[...cfg.dims],binary:cfg.binary,int8:cfg.int8,quant:cfg.quant,cfg};
+  return {files,total,blob:file,rep:cfg.rep,labels:[...cfg.labels],N:cfg.N,inputDim:cfg.inputDim,dims:[...cfg.dims],binary:cfg.binary,int8:cfg.int8,quant:cfg.quant,filter:cfg.filter,cfg};
 }
 
 function predictNai(nai, rows) {
@@ -1058,9 +1119,10 @@ function normalizeRawSixAxis(rawObj, targetN) {
 
 window.NAI = Object.freeze({
   SAMPLE_RATE_HZ, MADGWICK_BETA, GRAVITY_MPS2, MAX_PACKAGE_BYTES,
+  FILTER_HP, FILTER_LP, DEFAULT_HP_HZ, DEFAULT_LP_HZ,
   REP, CODE_TO_REP,
   loadNpz, parseDatasetArrays, buildDatasetNpzBlob,
-  resample, centerColumns, normalizeRawSixAxis,
+  resample, centerColumns, normalizeRawSixAxis, firstOrderFilterColumns, filterConfigForRepresentation,
   sklearnStratifiedSplit, buildRepresentationDataset,
   fitScaler, standardizeRows, flattenRows,
   makeModel, predictTf, accuracy,
