@@ -1,6 +1,10 @@
 # nai-2
 NoodleAI Mode 2 - Continuous Gesture Mode
 
+https://student-embedded-control-and-ai-fest.github.io/nai-2/
+
+---
+
 <img src="https://github.com/Student-Embedded-Control-and-AI-Fest/nai-2/blob/main/works/docs/device.png" width="300">
 
 ---
