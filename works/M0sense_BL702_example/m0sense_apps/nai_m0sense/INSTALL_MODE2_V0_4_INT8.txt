@@ -1,0 +1,92 @@
+NoodleAI Mode 2 v0.4 — INT8 + validation-selected confidence threshold
+=======================================================================
+
+What changed from v0.3
+----------------------
+- Noodle numerical mode is now full INT8.
+- mean.bin and scale.bin remain Float32 for StandardScaler preprocessing.
+- Dense weights wXX.bin are signed INT8.
+- Dense biases bXX.bin are signed INT32.
+- mXX.bin and sXX.bin contain per-output-channel Noodle requantization
+  multiplier and shift values.
+- cfg.bin remains NAI4 and now carries the Q8M1 extension:
+    stride_samples
+    threshold sweep min/max
+    selected confidence threshold
+    input activation scale / zero point
+    per-layer output scale / zero point
+- Inference sends P:<class>:<confidence> only when confidence >= threshold.
+- Below threshold it sends U:<confidence> and the web UI shows UNKNOWN.
+- MODEL:READY now also reports stride and threshold.
+- Device also publishes L:<index>:<label> so a fresh browser can recover labels
+  from the committed model without loading the .nai again.
+
+Current storage contract
+------------------------
+The proven 19-file slot header is unchanged.
+For a four-Dense-layer MLP the INT8 package uses exactly 19 files:
+  cfg.bin mean.bin scale.bin
+  w00 b00 m00 s00
+  w01 b01 m01 s01
+  w02 b02 m02 s02
+  w03 b03 m03 s03
+
+The current web exporter therefore limits INT8 deployment to at most four
+Dense layers (three hidden layers + output). This keeps the already-proven
+single-slot commit format unchanged.
+
+The old Float32 model can remain physically present after flashing this
+firmware, but v0.4 intentionally refuses to load it because it lacks the INT8
+flag/Q8M1 config. Deploy a new INT8 .nai once.
+
+Build
+-----
+cd ~/works/M0sense_BL702_example
+rm -rf bl_mcu_sdk/build
+./build.sh m0sense_apps/nai_m0sense
+
+Check binary size before flashing:
+stat -c '%s bytes' \
+  bl_mcu_sdk/out/m0sense_apps/nai_m0sense/nai_m0sense_bl702.bin
+
+It must remain <= 319488 bytes with the current flash map.
+
+Test
+----
+1. Flash v0.4.
+2. Open NoodleAI Web Mode2 v0.5.
+3. Load the existing dataset and Train + INT8 calibrate, OR load an INT8 .nai.
+4. Training performs:
+     Float32 training
+       -> INT8 PTQ calibration on training split
+       -> INT8 validation
+       -> confidence sweep 0.30..0.90 step 0.01
+       -> choose best accepted accuracy with >=90% coverage
+          (ties choose higher threshold)
+       -> store threshold + stride in cfg.bin
+5. Deploy.
+6. Expect MODEL_STORED, then MODEL:READY:N:D:K:stride:threshold_milli.
+7. Press INFERENCE MODE.
+8. Accepted predictions arrive as P:...
+   Low-confidence windows arrive as U:... / UNKNOWN.
+
+
+Mode 2 v0.4.1 representation update
+---------------------------------
+The device always captures raw QMI8658 ax/ay/az/gx/gy/gz at 50 Hz.
+Before Noodle inference it now mirrors the browser's NAI4 preprocessing for:
+  1 accelerometer (per-window centered)
+  2 gyroscope (per-window centered)
+  3 accel+gyro (per-window centered)
+  4 relative quaternion
+  5 estimated velocity
+  6 velocity+quaternion
+
+Estimated velocity/quaternion use the same v1 constants as the web trainer:
+  Madgwick beta = 0.10
+  gravity = 9.80665 m/s^2
+  trapezoidal velocity integration
+  linear endpoint drift correction to v(end)=0
+
+A one-shot BL702 XIP cache flush is also performed before loading a newly
+committed model so cfg.bin is not stale immediately after deployment.

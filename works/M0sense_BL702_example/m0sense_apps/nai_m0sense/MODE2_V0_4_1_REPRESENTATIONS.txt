@@ -1,0 +1,41 @@
+NoodleAI Mode 2 v0.4.1 — all NAI4 representations
+==================================================
+
+This firmware keeps raw QMI8658 acquisition fixed at 50 Hz / 6 axes and
+converts each full rolling window to the representation selected by cfg.bin.
+
+Supported NAI4 representation codes:
+  1  accel                 3 channels
+  2  gyro                  3 channels
+  3  accel+gyro            6 channels
+  4  relative quaternion   4 channels
+  5  estimated velocity    3 channels
+  6  velocity+quaternion   7 channels
+
+The derived-motion preprocessing mirrors NoodleAI Web v0.5 core.js:
+  Madgwick beta: 0.10
+  gravity:       9.80665 m/s^2
+  gyro input:    degrees/s -> radians/s internally
+  velocity:      trapezoidal integration
+  drift fix:     linear endpoint correction so v(0)=v(end)=0
+
+For raw accel/gyro representations, the device also now mirrors the web
+trainer's per-window channel centering before StandardScaler.
+
+The actual neural network remains Noodle INT8:
+  representation -> StandardScaler -> quantize -> noodle_fcn() layers ->
+  noodle_sigmoid()/noodle_soft_max() -> cfg confidence threshold.
+
+The browser v0.5 does not need to change.
+
+Recommended test after flashing:
+  1. Do NOT redeploy first.
+  2. Connect to the M0Sense.
+  3. The previously committed velocity model should load from flash.
+  4. Expect MODEL:READY:<N>:<inputDim>:<classes>:<stride>:<thresholdMilli>.
+  5. Press INFERENCE MODE.
+  6. If the stored model is N=100 velocity, inputDim should be 300.
+
+A one-shot XIP cache flush is performed before loading a model, including an
+immediate post-deployment reload. Weight reads remain on the fast cached XIP
+path during Noodle inference.

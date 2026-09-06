@@ -1,0 +1,23 @@
+NoodleAI Mode 2 v0.4.3 — QMI8658 startup settling
+===================================================
+
+Based on v0.4.2 loader-diagnostics/all-representations firmware.
+
+Only the IMU initialization behavior is changed:
+
+    software reset
+        -> wait 1800 ms
+        -> program CTRL1/2/3/5/7
+        -> wait 100 ms
+        -> verify registers
+        -> begin streaming
+
+The accel and gyro register decoding and scale factors are unchanged.
+
+No gyro bias subtraction is added in this build on purpose.  This lets us
+first determine whether the suspicious stationary gyro reading came from
+starting the QMI8658 too soon.  If a repeatable residual zero-rate bias remains,
+the next small step is startup gyro-bias calibration.
+
+This archive is complete for m0sense_apps/nai_m0sense and includes nai_imu.cpp
+and nai_imu.h.

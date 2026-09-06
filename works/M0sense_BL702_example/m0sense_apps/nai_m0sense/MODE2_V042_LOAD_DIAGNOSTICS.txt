@@ -1,0 +1,30 @@
+NoodleAI Mode 2 v0.4.2 — model loader diagnostics
+==================================================
+
+This build keeps the v0.4.1 representation/inference behavior but makes model
+loading observable over the existing STATUS characteristic.
+
+After connect, deployment, or pressing INFERENCE MODE, a failed load emits:
+
+    NO_MODEL
+    LOADRC:<code>
+
+or:
+
+    ERR:MODEL_LOAD
+    LOADRC:<code>
+
+Codes:
+     0  loaded successfully
+   -10  committed slot header not found/valid
+   -11  cfg.bin could not be opened/parsed/validated
+   -12  one or more parameter files missing or wrong byte count
+   -13  StandardScaler RAM allocation failed
+   -14  mean.bin / scale.bin open or read failed
+   -15  mean.bin / scale.bin contains invalid values
+   -16  Noodle INT8 input tensor allocation failed
+   -17  Noodle INT8 output tensor allocation failed
+   -18  post-load model geometry/sample-rate validation failed
+
+The loader is single-slot only.  The old fake A/B fallback has been removed so
+the first meaningful failure code is preserved.

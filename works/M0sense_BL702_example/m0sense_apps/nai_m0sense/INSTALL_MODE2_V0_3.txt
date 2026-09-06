@@ -1,0 +1,62 @@
+NoodleAI Mode 2 v0.3 — first real continuous Noodle inference
+==============================================================
+
+BASELINE
+--------
+This overlays the already-working v0.2.4 single-slot BLE/storage firmware.
+It keeps the same GATT UUIDs and deployment protocol.
+
+WHAT IS NEW
+-----------
+- Loads committed NAI4 through NoodleAIModelBL702.
+- First supported representation: accel+gyro (6 raw QMI8658 axes), 50 Hz.
+- Rolling-window length is read from cfg.bin; it is not hardcoded to 75.
+- Inference mode predicts once as soon as the first full window exists, then
+  every 5 new samples (100 ms stride at 50 Hz).
+- Sends P:<class_index>:<confidence> over STATUS.
+- TRAINING MODE keeps streaming but does not run Noodle inference.
+
+INSTALL
+-------
+From the repository root:
+
+  cd ~/works/M0sense_BL702_example
+  rm -rf mode2_v03_tmp
+  mkdir mode2_v03_tmp
+  unzip ~/Downloads/noodleai_mode2_v0_3_noodle_inference.zip -d mode2_v03_tmp
+  cp -r mode2_v03_tmp/* m0sense_apps/nai_m0sense/
+
+Build:
+
+  rm -rf bl_mcu_sdk/build
+  ./build.sh m0sense_apps/nai_m0sense
+
+IMPORTANT: check binary size before flashing:
+
+  stat -c '%s bytes' \
+    bl_mcu_sdk/out/m0sense_apps/nai_m0sense/nai_m0sense_bl702.bin
+
+It must remain <= 319488 bytes with the current flash layout.
+
+Flash:
+
+  bflb-mcu-tool-uart \
+    --chipname=bl702 \
+    --port=/dev/ttyACM0 \
+    --baudrate=2000000 \
+    --firmware=bl_mcu_sdk/out/m0sense_apps/nai_m0sense/nai_m0sense_bl702.bin
+
+Then REMOVE Boot_Strap from 3.3V and reset/power-cycle.
+
+FIRST TEST
+----------
+1. Open the v0.4 Mode 2 web app.
+2. Connect NoodleAI.
+3. The device should report MODEL:READY:<N>:<D>:<K> when the stored model is valid.
+4. Click INFERENCE MODE.
+5. UI should show MODE:I.
+6. Wait one full model window. For the current 100-sample model this is 2.0 s.
+7. Predictions arrive as P:<class>:<confidence> every 5 samples thereafter.
+
+If the stored model is missing/invalid, the firmware reports NO_MODEL.
+If the NAI4 is valid but not raw accel+gyro at 50 Hz, it reports model-load failure.

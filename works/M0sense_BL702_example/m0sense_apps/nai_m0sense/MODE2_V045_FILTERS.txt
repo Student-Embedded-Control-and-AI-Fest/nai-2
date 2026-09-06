@@ -1,0 +1,34 @@
+NoodleAI Mode 2 v0.4.5 — model-defined IMU filtering
+=====================================================
+
+Keeps v0.4.4:
+- startup QMI8658 gyro zero-rate calibration
+- INT8 Noodle MLP inference
+- all six NAI4 representations
+- validation-selected confidence threshold
+- single-slot raw flash model storage
+- loader diagnostics
+
+New FLT1 extension in cfg.bin
+-----------------------------
+The new NAI4 package appends a 16-byte FLT1 preprocessing record after Q8M1:
+
+    magic[4]      = "FLT1"
+    flags         = bit0 high-pass, bit1 low-pass
+    reserved      = 0
+    highpass_hz   = float32
+    lowpass_hz    = float32
+
+Default browser-generated settings:
+
+Representations 1-3 (Accelerometer / Gyroscope / Accel+Gyro):
+    first-order high-pass 0.10 Hz
+    followed by first-order low-pass 8.0 Hz
+    => band-pass gesture features
+
+Representations 4-6 (Quaternion / Velocity / Velocity+Quaternion):
+    first-order low-pass 8.0 Hz on raw accel+gyro before Madgwick
+    NO high-pass, preserving gravity and genuine slow rotation
+
+Old INT8 NAI4 packages without FLT1 remain loadable and use their old preprocessing.
+The filter adds no new model files, so the 19-file slot-header limit is unchanged.

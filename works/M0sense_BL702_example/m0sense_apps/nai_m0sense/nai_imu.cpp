@@ -1,0 +1,205 @@
+#include "nai_imu.h"
+
+extern "C" {
+#include "bflb_platform.h"
+#include "bl702_glb.h"
+#include "hal_i2c.h"
+}
+
+#include "io_def.h"
+
+namespace {
+
+constexpr uint8_t ADDR = 0x6A;
+constexpr uint8_t WHOAMI = 0x00;
+constexpr uint8_t CTRL1 = 0x02;
+constexpr uint8_t CTRL2 = 0x03;
+constexpr uint8_t CTRL3 = 0x04;
+constexpr uint8_t CTRL5 = 0x06;
+constexpr uint8_t CTRL7 = 0x08;
+constexpr uint8_t REG_RESET = 0x60;
+constexpr uint8_t AX_L = 0x35;
+
+constexpr float ACC_SCALE_G = 4.0f / 32768.0f;
+constexpr float GYR_SCALE_DPS = 1024.0f / 32768.0f;
+
+/*
+ * Startup gyro zero-rate calibration.
+ *
+ * Keep the M0Sense motionless for about 1.2 s after reset/power-on.
+ * We discard 20 samples, average the next 100, and subtract the resulting
+ * gx/gy/gz zero-rate bias from all subsequent gyro output.
+ */
+constexpr uint16_t GYRO_CAL_WARMUP_SAMPLES = 20;
+constexpr uint16_t GYRO_CAL_SAMPLES = 100;
+constexpr uint16_t GYRO_CAL_DELAY_MS = 10;
+
+struct device *s_i2c = nullptr;
+
+float s_gyro_bias_dps[3] = {0.0f, 0.0f, 0.0f};
+bool s_gyro_calibrated = false;
+
+bool write_reg(uint8_t reg, uint8_t val)
+{
+    i2c_msg_t m{};
+    m.buf = &val;
+    m.slaveaddr = ADDR;
+    m.len = 1;
+    m.flags = SUB_ADDR_1BYTE | I2C_WR;
+    m.subaddr = reg;
+    return i2c_transfer(s_i2c, &m, 1) == 0;
+}
+
+bool read_reg(uint8_t reg, uint8_t &val)
+{
+    i2c_msg_t m{};
+    m.buf = &val;
+    m.slaveaddr = ADDR;
+    m.len = 1;
+    m.flags = SUB_ADDR_1BYTE | I2C_RD;
+    m.subaddr = reg;
+    return i2c_transfer(s_i2c, &m, 1) == 0;
+}
+
+bool masked_is(uint8_t reg, uint8_t mask, uint8_t expected)
+{
+    uint8_t v = 0;
+    return read_reg(reg, v) && (v & mask) == expected;
+}
+
+bool read_raw_scaled(float out6[6])
+{
+    if (!s_i2c || !out6) return false;
+
+    uint8_t b[12];
+    for (uint8_t i = 0; i < 12; ++i) {
+        i2c_msg_t m{};
+        m.buf = &b[i];
+        m.slaveaddr = ADDR;
+        m.len = 1;
+        m.flags = SUB_ADDR_1BYTE | I2C_RD;
+        m.subaddr = (uint8_t)(AX_L + i);
+        if (i2c_transfer(s_i2c, &m, 1) != 0) return false;
+    }
+
+    const int16_t ax = (int16_t)(((uint16_t)b[1] << 8) | b[0]);
+    const int16_t ay = (int16_t)(((uint16_t)b[3] << 8) | b[2]);
+    const int16_t az = (int16_t)(((uint16_t)b[5] << 8) | b[4]);
+    const int16_t gx = (int16_t)(((uint16_t)b[7] << 8) | b[6]);
+    const int16_t gy = (int16_t)(((uint16_t)b[9] << 8) | b[8]);
+    const int16_t gz = (int16_t)(((uint16_t)b[11] << 8) | b[10]);
+
+    out6[0] = ax * ACC_SCALE_G;
+    out6[1] = ay * ACC_SCALE_G;
+    out6[2] = az * ACC_SCALE_G;
+    out6[3] = gx * GYR_SCALE_DPS;
+    out6[4] = gy * GYR_SCALE_DPS;
+    out6[5] = gz * GYR_SCALE_DPS;
+
+    return true;
+}
+
+bool calibrate_gyro_zero_rate()
+{
+    float s[6];
+
+    s_gyro_calibrated = false;
+    s_gyro_bias_dps[0] = 0.0f;
+    s_gyro_bias_dps[1] = 0.0f;
+    s_gyro_bias_dps[2] = 0.0f;
+
+    for (uint16_t i = 0; i < GYRO_CAL_WARMUP_SAMPLES; ++i) {
+        if (!read_raw_scaled(s)) return false;
+        bflb_platform_delay_ms(GYRO_CAL_DELAY_MS);
+    }
+
+    double sx = 0.0;
+    double sy = 0.0;
+    double sz = 0.0;
+
+    for (uint16_t i = 0; i < GYRO_CAL_SAMPLES; ++i) {
+        if (!read_raw_scaled(s)) return false;
+
+        sx += s[3];
+        sy += s[4];
+        sz += s[5];
+
+        bflb_platform_delay_ms(GYRO_CAL_DELAY_MS);
+    }
+
+    s_gyro_bias_dps[0] = (float)(sx / (double)GYRO_CAL_SAMPLES);
+    s_gyro_bias_dps[1] = (float)(sy / (double)GYRO_CAL_SAMPLES);
+    s_gyro_bias_dps[2] = (float)(sz / (double)GYRO_CAL_SAMPLES);
+
+    s_gyro_calibrated = true;
+    return true;
+}
+
+} // namespace
+
+bool nai_imu_init()
+{
+    GLB_GPIO_Type gpios[] = {
+        (GLB_GPIO_Type)IMU_SCK_PIN,
+        (GLB_GPIO_Type)IMU_SDA_PIN
+    };
+    GLB_GPIO_Func_Init(GPIO_FUN_I2C, gpios, 2);
+
+    i2c_register(I2C0_INDEX, "nai_i2c");
+    s_i2c = device_find("nai_i2c");
+    if (!s_i2c) return false;
+    if (device_open(s_i2c, DEVICE_OFLAG_DEFAULT) != 0) return false;
+
+    uint8_t who = 0;
+    if (!read_reg(WHOAMI, who) || who != 0x05) return false;
+
+    /*
+     * accel ±4 g,       ODR 125 Hz
+     * gyro  ±1024 dps,  ODR 112.1 Hz
+     */
+    if (!write_reg(REG_RESET, 0xB0)) return false;
+
+    /* Restore the short delay used by the older working driver. */
+    bflb_platform_delay_ms(20);
+
+    if (!write_reg(CTRL1, 0x40)) return false;
+    if (!write_reg(CTRL2, 0x16)) return false;
+    if (!write_reg(CTRL3, 0x66)) return false;
+    if (!write_reg(CTRL5, 0x00)) return false;
+    if (!write_reg(CTRL7, 0x03)) return false;
+
+    /* Let gyro output settle before estimating zero-rate bias. */
+    bflb_platform_delay_ms(100);
+
+    if (!masked_is(CTRL1, 0x40, 0x40)) return false;
+    if (!masked_is(CTRL2, 0x7F, 0x16)) return false;
+    if (!masked_is(CTRL3, 0x7F, 0x66)) return false;
+    if (!masked_is(CTRL5, 0x11, 0x00)) return false;
+    if (!masked_is(CTRL7, 0x03, 0x03)) return false;
+
+    /*
+     * IMPORTANT:
+     * Board must be motionless during this approximately 1.2-second phase.
+     */
+    if (!calibrate_gyro_zero_rate()) return false;
+
+    return true;
+}
+
+bool nai_imu_read(float out6[6])
+{
+    if (!out6) return false;
+
+    float s[6];
+    if (!read_raw_scaled(s)) return false;
+
+    out6[0] = s[0];
+    out6[1] = s[1];
+    out6[2] = s[2];
+
+    out6[3] = s[3] - (s_gyro_calibrated ? s_gyro_bias_dps[0] : 0.0f);
+    out6[4] = s[4] - (s_gyro_calibrated ? s_gyro_bias_dps[1] : 0.0f);
+    out6[5] = s[5] - (s_gyro_calibrated ? s_gyro_bias_dps[2] : 0.0f);
+
+    return true;
+}

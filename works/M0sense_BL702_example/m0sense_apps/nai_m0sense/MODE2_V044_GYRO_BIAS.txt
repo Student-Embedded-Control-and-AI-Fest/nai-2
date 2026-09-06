@@ -1,0 +1,20 @@
+NoodleAI Mode 2 v0.4.4 — startup gyro zero-rate calibration
+
+Keeps:
+- INT8 Noodle inference
+- threshold/stride from cfg.bin
+- all NAI4 input representations
+- loader diagnostics
+- single-slot model storage
+
+IMU change:
+- 20 ms after software reset
+- 100 ms settle after enabling accel + gyro
+- discard 20 gyro samples
+- average 100 samples at 10 ms intervals
+- subtract gx/gy/gz startup zero-rate bias from every later gyro sample
+
+IMPORTANT:
+Keep the M0Sense completely still for about 1.2 seconds after reset/power-on.
+
+No accelerometer bias calibration is performed.
