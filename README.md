@@ -1,7 +1,9 @@
 # nai-2
 NoodleAI Mode 2 - Continuous Gesture Mode
 
+<img src="https://github.com/Student-Embedded-Control-and-AI-Fest/nai-2/blob/main/works/docs/device.png" width="300">
 
+---
 
 ```
 cd ~/works/M0sense_BL702_example
