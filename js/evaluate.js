@@ -28,13 +28,7 @@
 
   const byId = id => document.getElementById(id);
   const fmtPct = v => Number.isFinite(v) ? `${(100 * v).toFixed(1)}%` : '—';
-  const esc = s => String(s)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-
+  
   function injectStyles() {
     const style = document.createElement('style');
     style.textContent = `
@@ -89,17 +83,18 @@
             <span class="step">1</span>
             <div>
               <div class="section-kicker">HELD-OUT TEST</div>
-              <h2>Independent dataset evaluation</h2>
-              <p>Load a separate NoodleAI .npz after training. Test samples never participate in training, scaler fitting, INT8 calibration, or threshold selection.</p>
+              <h2>Separate dataset evaluation</h2>
+              <p>Load a separate NoodleAI .npz after training. Evaluation never uses the loaded test samples for training, scaler fitting, INT8 calibration, or threshold selection. Use a truly separate session for independent testing.</p>
             </div>
           </div>
 
           <div class="evaluate-controls">
             <label class="file-button">Load test .npz<input id="evaluateDatasetFile" type="file" accept=".npz" hidden></label>
             <button id="evaluateBtn" class="primary" disabled>Evaluate frozen model</button>
+            <button id="exportTestPaperBtn" class="secondary" disabled>Export paper results (.zip)</button>
             <button id="clearEvaluateBtn" class="ghost" disabled>Clear test set</button>
           </div>
-          <div id="evaluateStatus" class="status-box">Load an independent test .npz. You may load the test set before or after training.</div>
+          <div id="evaluateStatus" class="status-box">Load an separately collected test .npz. You may load the test set before or after training.</div>
         </div>
 
         <div class="panel">
@@ -113,26 +108,20 @@
           </div>
 
           <div class="eval-summary">
-            <div class="eval-metric"><span>Test windows</span><strong id="evalCount">—</strong><small>independent samples</small></div>
+            <div class="eval-metric"><span>Test windows</span><strong id="evalCount">—</strong><small>user-supplied samples</small></div>
             <div class="eval-metric"><span>Float32 accuracy</span><strong id="evalFloatAcc">—</strong><small>TF.js frozen model</small></div>
             <div class="eval-metric"><span>INT8 accuracy</span><strong id="evalInt8Acc">—</strong><small>Noodle quantized path</small></div>
-            <div class="eval-metric"><span>Macro F1</span><strong id="evalMacroF1">—</strong><small>INT8 argmax</small></div>
+            <div class="eval-metric"><span>FP32 macro F1</span><strong id="evalFloatF1">—</strong><small>before rejection</small></div>
+            <div class="eval-metric"><span>INT8 macro F1</span><strong id="evalMacroF1">—</strong><small>before rejection</small></div>
+            <div class="eval-metric"><span>FP32/INT8 agreement</span><strong id="evalAgreement">—</strong><small>same test windows</small></div>
             <div class="eval-metric"><span>Coverage</span><strong id="evalCoverage">—</strong><small id="evalThresholdNote">at frozen threshold</small></div>
             <div class="eval-metric"><span>Accepted accuracy</span><strong id="evalAcceptedAcc">—</strong><small>after rejection</small></div>
           </div>
 
-          <div class="eval-grid">
-            <div class="eval-card">
-              <h3>INT8 confusion matrix</h3>
-              <p>Rows are true classes; columns are predicted classes before confidence rejection.</p>
-              <div id="evalConfusion">No evaluation yet.</div>
-            </div>
-            <div class="eval-card">
-              <h3>Per-class metrics</h3>
-              <p>Precision, recall, F1, and support from independent INT8 predictions.</p>
-              <div id="evalPerClass">No evaluation yet.</div>
-            </div>
-          </div>
+          <div id="evalFloatDetail"></div>
+          <hr class="nai-report-divider">
+          <div id="evalInt8Detail"></div>
+          <p class="nai-report-warning">Results above are browser-side tests on a separately loaded .npz. Independence from training sessions and physical BL702 equivalence must be established separately. Both confusion matrices use argmax before confidence rejection.</p>
           <div id="evalProvenance" class="eval-note"></div>
         </div>
       </div>
@@ -147,12 +136,14 @@
   }
 
   function resetDisplayedResults() {
-    for (const id of ['evalCount','evalFloatAcc','evalInt8Acc','evalMacroF1','evalCoverage','evalAcceptedAcc']) {
+    for (const id of ['evalCount','evalFloatAcc','evalInt8Acc','evalFloatF1','evalMacroF1','evalAgreement','evalCoverage','evalAcceptedAcc']) {
       byId(id).textContent = '—';
     }
     byId('evalThresholdNote').textContent = 'at frozen threshold';
-    byId('evalConfusion').textContent = 'No evaluation yet.';
-    byId('evalPerClass').textContent = 'No evaluation yet.';
+    byId('evalFloatDetail').textContent = '';
+    byId('evalInt8Detail').textContent = '';
+    byId('exportTestPaperBtn').disabled = true;
+    window.NoodleMode2Paper?.setTest(null);
     byId('evalProvenance').textContent = '';
     ev.lastResult = null;
   }
@@ -173,14 +164,14 @@
     status.classList.remove('eval-ready','eval-warning');
     if (haveTest && haveModel) {
       status.classList.add('eval-ready');
-      status.textContent = `${ev.fileName}: ${ev.dataset.y.length} held-out windows loaded. Frozen ${REP_NAME[state.trainedRep] || state.trainedRep} model is ready for independent evaluation.`;
+      status.textContent = `${ev.fileName}: ${ev.dataset.y.length} separately supplied windows loaded. Frozen ${REP_NAME[state.trainedRep] || state.trainedRep} model is ready for separate-dataset evaluation.`;
     } else if (haveTest) {
       status.classList.add('eval-warning');
-      status.textContent = `${ev.fileName}: ${ev.dataset.y.length} held-out windows loaded. Train a model in this browser session before evaluating.`;
+      status.textContent = `${ev.fileName}: ${ev.dataset.y.length} separately supplied windows loaded. Train a model in this browser session before evaluating.`;
     } else if (haveModel) {
-      status.textContent = `Frozen ${REP_NAME[state.trainedRep] || state.trainedRep} model ready. Load an independent test .npz.`;
+      status.textContent = `Frozen ${REP_NAME[state.trainedRep] || state.trainedRep} model ready. Load an separately collected test .npz.`;
     } else {
-      status.textContent = 'Load an independent test .npz. You may load the test set before or after training.';
+      status.textContent = 'Load an separately collected test .npz. You may load the test set before or after training.';
     }
   }
 
@@ -205,28 +196,6 @@
     return y;
   }
 
-  function confusionAndMetrics(pred, y, labels) {
-    const K = labels.length;
-    const cm = Array.from({length:K}, () => Array(K).fill(0));
-    for (let i=0;i<y.length;i++) cm[y[i]][pred[i]]++;
-
-    const perClass = [];
-    let macroF1 = 0;
-    for (let k=0;k<K;k++) {
-      const tp = cm[k][k];
-      const support = cm[k].reduce((a,b)=>a+b,0);
-      let predicted = 0;
-      for (let r=0;r<K;r++) predicted += cm[r][k];
-      const precision = predicted ? tp / predicted : 0;
-      const recall = support ? tp / support : 0;
-      const f1 = (precision + recall) ? 2 * precision * recall / (precision + recall) : 0;
-      perClass.push({label:labels[k], precision, recall, f1, support});
-      macroF1 += f1;
-    }
-    macroF1 /= K;
-    return {cm, perClass, macroF1};
-  }
-
   function thresholdMetrics(probs, y, threshold) {
     let accepted = 0, correct = 0;
     for (let i=0;i<y.length;i++) {
@@ -246,30 +215,6 @@
     };
   }
 
-  function renderConfusion(cm, labels) {
-    let html = '<table class="eval-table"><thead><tr><th>Actual \\ Pred.</th>';
-    for (const l of labels) html += `<th>${esc(l)}</th>`;
-    html += '</tr></thead><tbody>';
-    for (let r=0;r<labels.length;r++) {
-      html += `<tr><th>${esc(labels[r])}</th>`;
-      for (let c=0;c<labels.length;c++) {
-        html += `<td${r===c?' class="diag"':''}>${cm[r][c]}</td>`;
-      }
-      html += '</tr>';
-    }
-    html += '</tbody></table>';
-    byId('evalConfusion').innerHTML = html;
-  }
-
-  function renderPerClass(rows) {
-    let html = '<table class="eval-table"><thead><tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Support</th></tr></thead><tbody>';
-    for (const r of rows) {
-      html += `<tr><th>${esc(r.label)}</th><td>${fmtPct(r.precision)}</td><td>${fmtPct(r.recall)}</td><td>${fmtPct(r.f1)}</td><td>${r.support}</td></tr>`;
-    }
-    html += '</tbody></table>';
-    byId('evalPerClass').innerHTML = html;
-  }
-
   async function loadTestFile(file) {
     const arrays = await NAI.loadNpz(file);
     const ds = NAI.parseDatasetArrays(arrays);
@@ -285,7 +230,7 @@
   }
 
   async function evaluateFrozenModel() {
-    if (!ev.dataset) throw new Error('Load an independent test .npz first.');
+    if (!ev.dataset) throw new Error('Load an separately collected test .npz first.');
     if (!currentModelReady()) throw new Error('Train a model in this browser session first. Evaluation never trains or refits the model.');
 
     const ds = ev.dataset;
@@ -308,37 +253,50 @@
     const floatAcc = NAI.accuracy(floatPred.pred, Array.from(y));
     const int8Acc = NAI.accuracy(qPred.pred, Array.from(y));
 
-    const classStats = confusionAndMetrics(qPred.pred, y, state.modelLabels);
+    const floatMetrics = NoodleMetrics.evaluate(y, floatPred.pred, state.modelLabels);
+    const int8Metrics = NoodleMetrics.evaluate(y, qPred.pred, state.modelLabels);
+    const nAgree=Array.from(floatPred.pred).reduce((sum,p,i)=>sum+(p===qPred.pred[i]?1:0),0);
+    const agreement={matches:nAgree,n:y.length,rate:nAgree/y.length};
     const threshold = Number(state.pkg.quant?.confidenceThreshold ?? state.pkg.sweep?.selected?.threshold ?? 0);
     const tm = thresholdMetrics(qPred.probs, y, threshold);
+    const pairedPredictions=Array.from(y,(actual,i)=>({datasetIndex:i,actual:Number(actual),
+      fp32Pred:Number(floatPred.pred[i]),int8Pred:Number(qPred.pred[i]),
+      fp32Probs:Array.from(floatPred.probs[i]),int8Probs:Array.from(qPred.probs[i])}));
 
     byId('evalCount').textContent = String(y.length);
     byId('evalFloatAcc').textContent = fmtPct(floatAcc);
     byId('evalInt8Acc').textContent = fmtPct(int8Acc);
-    byId('evalMacroF1').textContent = fmtPct(classStats.macroF1);
+    byId('evalFloatF1').textContent = floatMetrics.macro.f1.toFixed(3);
+    byId('evalMacroF1').textContent = int8Metrics.macro.f1.toFixed(3);
+    byId('evalAgreement').textContent = `${nAgree} / ${y.length} (${fmtPct(agreement.rate)})`;
     byId('evalCoverage').textContent = fmtPct(tm.coverage);
     byId('evalAcceptedAcc').textContent = fmtPct(tm.acceptedAccuracy);
     byId('evalThresholdNote').textContent = `T=${threshold.toFixed(2)} · ${tm.rejected} rejected`;
-    renderConfusion(classStats.cm, state.modelLabels);
-    renderPerClass(classStats.perClass);
+    byId('evalFloatDetail').innerHTML = window.NoodleMode2Paper.metricsHTML(floatMetrics,'FP32 · separate test');
+    byId('evalInt8Detail').innerHTML = window.NoodleMode2Paper.metricsHTML(int8Metrics,'INT8 · separate test');
 
     byId('evalProvenance').textContent =
       `${ev.fileName} · ${REP_NAME[state.trainedRep] || state.trainedRep} · topology ${state.pkg.dims.join(' → ')} · `+
-      `scaler frozen from training split · confidence threshold frozen from validation split · test set used once for reporting only.`;
+      `scaler frozen from training split · confidence threshold frozen from validation split · test set not used for training/calibration/threshold selection.`;
 
     ev.mappedY = y;
-    ev.lastResult = {floatAcc,int8Acc,classStats,thresholdMetrics:tm,threshold};
+    ev.lastResult = {fp32:floatMetrics,int8:int8Metrics,agreement,pairedPredictions,
+      thresholdMetrics:tm,threshold,fileName:ev.fileName,createdUtc:new Date().toISOString(),
+      modelSignature:state.pkg.dims.join(',')};
+    window.NoodleMode2Paper.setTest(ev.lastResult);
+    byId('exportTestPaperBtn').disabled = false;
     byId('evaluateStatus').classList.add('eval-ready');
     byId('evaluateStatus').textContent =
-      `Independent evaluation complete: Float32 ${fmtPct(floatAcc)} · INT8 ${fmtPct(int8Acc)} · `+
-      `macro F1 ${fmtPct(classStats.macroF1)} · coverage ${fmtPct(tm.coverage)} at T=${threshold.toFixed(2)}.`;
+      `Separate-dataset evaluation complete: Float32 ${fmtPct(floatAcc)} · INT8 ${fmtPct(int8Acc)} · `+
+      `INT8 macro F1 ${fmtPct(int8Metrics.macro.f1)} · agreement ${fmtPct(agreement.rate)} · coverage ${fmtPct(tm.coverage)} at T=${threshold.toFixed(2)}.`;
 
     if (typeof log === 'function') {
-      log(`Held-out evaluation ${ev.fileName}: float=${fmtPct(floatAcc)}, INT8=${fmtPct(int8Acc)}, macro-F1=${fmtPct(classStats.macroF1)}, coverage=${fmtPct(tm.coverage)}, accepted-acc=${fmtPct(tm.acceptedAccuracy)}, T=${threshold.toFixed(2)}.`);
+      log(`Separate test ${ev.fileName}: FP32 ${fmtPct(floatAcc)}, INT8 ${fmtPct(int8Acc)}, INT8 macro F1 ${fmtPct(int8Metrics.macro.f1)}, FP32/INT8 agreement ${fmtPct(agreement.rate)}, coverage ${fmtPct(tm.coverage)}, accepted accuracy ${fmtPct(tm.acceptedAccuracy)}, T=${threshold.toFixed(2)}.`);
     }
   }
 
   function bindEvents() {
+    byId('exportTestPaperBtn').addEventListener('click', () => window.NoodleMode2Paper.exportReport());
     byId('evaluateDatasetFile').addEventListener('change', async e => {
       try {
         const file = e.target.files[0];

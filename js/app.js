@@ -14,7 +14,7 @@ const REP_LABEL={accel:'Accelerometer',gyro:'Gyroscope','accel+gyro':'Accel + Gy
 const state={
   labels:[],samples:[],rawSamples:[],targets:[],rawLengths:[],durationsMs:[],N:75,setupLocked:false,
   pendingRaw:null,pendingWindow:null,pendingWindows:null,pendingLabelIndex:null,pendingDurationMs:0,recording:null,recordStartTms:null,
-  model:null,scaler:null,pkg:null,history:null,thresholdSweep:null,trainedRep:null,modelLabels:[],deviceMode:'?',
+  model:null,scaler:null,pkg:null,report:null,history:null,thresholdSweep:null,trainedRep:null,modelLabels:[],deviceMode:'?',
   live:{t:[],accel:[[],[],[]],gyro:[[],[],[]]},
 };
 
@@ -96,7 +96,7 @@ function refreshDataset(){
   $('trainBtn').disabled=!(state.setupLocked&&n>0);
 }
 
-function invalidateModel(){if(state.model){try{state.model.dispose();}catch(_){}}state.model=null;state.scaler=null;state.pkg=null;state.history=null;state.thresholdSweep=null;state.trainedRep=null;state.modelLabels=[];$('saveModelBtn').disabled=true;$('deployBtn').disabled=true;$('trainResult').textContent='';$('curveSummary').textContent='Train a model to see loss and accuracy history.';$('quantResult').textContent='After float training: post-training INT8 quantization uses the training split for activation calibration, then sweeps confidence 0.30 → 0.90 on the held-out validation split.';drawTrainingCurves();drawThresholdSweep();}
+function invalidateModel(){if(state.model){try{state.model.dispose();}catch(_){}}state.model=null;state.scaler=null;state.pkg=null;state.report=null;if(window.NoodleMode2Paper)window.NoodleMode2Paper.reset();state.history=null;state.thresholdSweep=null;state.trainedRep=null;state.modelLabels=[];$('saveModelBtn').disabled=true;$('deployBtn').disabled=true;$('trainResult').textContent='';$('curveSummary').textContent='Train a model to see loss and accuracy history.';$('quantResult').textContent='After float training: post-training INT8 quantization uses the training split for activation calibration, then sweeps confidence 0.30 → 0.90 on the held-out validation split.';drawTrainingCurves();drawThresholdSweep();}
 
 function lockUi(locked){
   state.setupLocked=locked;
@@ -361,7 +361,7 @@ async function trainModel(){
     if(!state.setupLocked||!state.targets.length)throw new Error('Create or load a dataset first.');
     const hidden=parseHidden(),epochs=Number($('epochs').value),rep=selectedRep();if(!Number.isInteger(epochs)||epochs<10||epochs>5000)throw new Error('Epochs must be 10..5000.');
     const ds=datasetObject();const K=state.labels.length;const counts=Array(K).fill(0);state.targets.forEach(y=>counts[y]++);if(Math.min(...counts)<2)throw new Error('Each class needs at least two samples for a stratified train/validation split.');
-    $('trainBtn').disabled=true;$('trainResult').textContent='Preparing representation…';
+    $('trainBtn').disabled=true;state.report=null;if(window.NoodleMode2Paper)window.NoodleMode2Paper.reset();$('trainResult').textContent='Preparing representation…';
     const rows=NAI.buildRepresentationDataset(ds,rep);const D=rows[0].length;const split=NAI.sklearnStratifiedSplit(ds.y,K,42);const scaler=NAI.fitScaler(rows,split.train);const Xtr=NAI.standardizeRows(rows,split.train,scaler),Xva=NAI.standardizeRows(rows,split.test,scaler);const ytr=Int32Array.from(split.train.map(i=>ds.y[i])),yva=Int32Array.from(split.test.map(i=>ds.y[i]));
     const model=NAI.makeModel(D,hidden,K,split.train.length);const tx=tf.tensor2d(NAI.flattenRows(Xtr),[Xtr.length,D],'float32'),vx=tf.tensor2d(NAI.flattenRows(Xva),[Xva.length,D],'float32');let ty,vy;if(K===2){ty=tf.tensor2d(Float32Array.from(ytr),[ytr.length,1]);vy=tf.tensor2d(Float32Array.from(yva),[yva.length,1]);}else{const ity=tf.tensor1d(ytr,'int32'),ivy=tf.tensor1d(yva,'int32');ty=tf.oneHot(ity,K);vy=tf.oneHot(ivy,K);ity.dispose();ivy.dispose();}
     const hist={epoch:[],loss:[],valLoss:[],acc:[],valAcc:[]};$('trainResult').textContent=`Training ${D} → ${hidden.join(' → ')} → ${K}…`;switchTab('curves');
@@ -371,7 +371,32 @@ async function trainModel(){
     $('trainResult').textContent=`Float validation ${pct(valAcc)} · quantizing INT8…`;
     const stride=Math.max(1,Math.min(state.N,Number($('windowStride').value)||5));
     const pkg=await NAI.exportNai4Int8(model,scaler,state.labels,state.N,rep,Xtr,Xva,yva,stride);
-    if(state.model){try{state.model.dispose();}catch(_){}}state.model=model;state.scaler=scaler;state.pkg=pkg;state.history=hist;state.thresholdSweep=pkg.sweep;state.trainedRep=rep;state.modelLabels=[...state.labels];
+    // Final-epoch, pre-rejection metrics on the SAME held-out validation windows.
+    // Quantizer calibration and scaler fitting use Xtr only; the threshold is
+    // chosen using Xva and therefore MUST NOT be presented as test accuracy.
+    const qm=NAI.predictQuantized(pkg.qmodel,Xva,K);
+    const trainMetrics=NoodleMetrics.evaluate(ytr,tr.pred,ds.labels);
+    const floatMetrics=NoodleMetrics.evaluate(yva,va.pred,ds.labels);
+    const int8Metrics=NoodleMetrics.evaluate(yva,qm.pred,ds.labels);
+    const matches=Array.from(va.pred).reduce((v,p,i)=>v+(p===qm.pred[i]?1:0),0);
+    const predRows=(pred,probs)=>split.test.map((datasetIndex,i)=>({datasetIndex,actual:Number(yva[i]),predicted:Number(pred[i]),probabilities:Array.from(probs[i])}));
+    const report={train:trainMetrics,validation:floatMetrics,int8Validation:int8Metrics,
+      fp32Int8Agreement:{matches,n:yva.length,rate:matches/yva.length},
+      validationPredictions:predRows(va.pred,va.probs),
+      int8ValidationPredictions:predRows(qm.pred,qm.probs),history:hist,split,
+      metadata:{createdUtc:new Date().toISOString(),model_format:'NAI4 packed INT8 (FP32 trained reference)',
+        target:'BL702 M0Sense Mode 2',representation:rep,architecture:pkg.dims,
+        labels:[...ds.labels],targets:Array.from(ds.y),sampleRateHz:NAI.SAMPLE_RATE_HZ,
+        normalizedLength:ds.N,windowStride:stride,epochs,seed:42,
+        trainWindows:split.train.length,validationWindows:split.test.length,
+        packageRawBytes:pkg.total,confidenceThreshold:pkg.sweep.selected.threshold,
+        thresholdSweepSelection:'Selected on validation split, never on independent test',
+        calibration:'INT8 activation scales calibrated on training partition only',
+        method:'Stratified window-level holdout (seed 42)',
+        caveat:'Overlapping rolling windows from the same recording may appear across train and validation; these scores are not independent session-disjoint estimates.',
+        testSet:'No independent test is part of the training split; a separate Evaluate tab may load an external dataset.'}};
+    if(state.model){try{state.model.dispose();}catch(_){}}state.model=model;state.scaler=scaler;state.pkg=pkg;state.report=report;state.history=hist;state.thresholdSweep=pkg.sweep;state.trainedRep=rep;state.modelLabels=[...state.labels];
+    window.NoodleMode2Paper.renderValidation(report);
     const q=pkg.sweep.selected;
     $('trainResult').textContent=`Float val ${pct(valAcc)} · INT8 val ${pct(pkg.qValAcc)} · T=${q.threshold.toFixed(2)} · ${(pkg.total/1024).toFixed(1)} KiB`;
     const f=pkg.filter;const fdesc=(f.flags&NAI.FILTER_HP)?`${f.highpassHz.toFixed(2)}–${f.lowpassHz.toFixed(1)} Hz band-pass`:`${f.lowpassHz.toFixed(1)} Hz low-pass`;
@@ -389,6 +414,7 @@ $('deployNaiFile').addEventListener('change',async e=>{
     const pkg=await NAI.loadNaiPackage(file);
 
     if(!pkg.int8)throw new Error('This is a Float32 NAI4 package. Mode 2 v0.4.5 firmware expects the new INT8 NAI4 package; load the dataset and Train + INT8 calibrate first.');
+    invalidateModel(); // Loading a deployment-only package invalidates old FP32/report state.
     state.pkg=pkg;
     state.trainedRep=pkg.rep;
     state.modelLabels=[...pkg.labels];
