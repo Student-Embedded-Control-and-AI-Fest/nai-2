@@ -45,6 +45,42 @@ function updateInputAndTopology(){
   try{$('topology').textContent=`Topology: ${[D,...parseHidden(),Math.max(state.labels.length,0)].join(' → ')}  [${REP_LABEL[rep]}]`;}catch(e){$('topology').textContent=`Topology: ${e.message}`;}
 }
 
+// Delete one class and its aligned windows without disturbing the other classes.
+// Returns a new dataset snapshot so confirmation/cancellation is side-effect free.
+function datasetWithoutClass(ds, removedIndex){
+  const n=ds.targets.length;
+  if(!Number.isInteger(removedIndex)||removedIndex<0||removedIndex>=ds.labels.length){
+    throw new Error('Select a valid class to remove.');
+  }
+  if(ds.samples.length!==n){
+    throw new Error('Dataset is inconsistent: samples and labels have different lengths. Save a backup before editing.');
+  }
+  for(const key of ['rawSamples','rawLengths','durationsMs']){
+    if(ds[key].length!==0&&ds[key].length!==n){
+      throw new Error(`Dataset is inconsistent: ${key} contains ${ds[key].length} entries for ${n} windows.`);
+    }
+  }
+
+  const keep=[];
+  for(let j=0;j<n;j++){
+    const y=ds.targets[j];
+    if(!Number.isInteger(y)||y<0||y>=ds.labels.length){
+      throw new Error(`Dataset contains an invalid class index at sample ${j}.`);
+    }
+    if(y!==removedIndex)keep.push(j);
+  }
+
+  const subset=key=>ds[key].length===n?keep.map(j=>ds[key][j]):[];
+  return {
+    labels:ds.labels.filter((_,i)=>i!==removedIndex),
+    samples:subset('samples'),
+    rawSamples:subset('rawSamples'),
+    targets:keep.map(j=>ds.targets[j]>removedIndex?ds.targets[j]-1:ds.targets[j]),
+    rawLengths:subset('rawLengths'),
+    durationsMs:subset('durationsMs'),
+  };
+}
+
 function refreshLabels(){
   $('labelList').innerHTML='';$('recordLabel').innerHTML='';
   state.labels.forEach((label,i)=>{const a=document.createElement('option');a.value=String(i);a.textContent=label;$('labelList').appendChild(a);const b=a.cloneNode(true);$('recordLabel').appendChild(b);});
@@ -110,25 +146,43 @@ $('addLabelBtn').addEventListener('click',()=>{
 $('labelEntry').addEventListener('keydown',e=>{if(e.key==='Enter'){$('addLabelBtn').click();e.preventDefault();}});
 $('removeLabelBtn').addEventListener('click',()=>{
   if(state.setupLocked)return;
-  const i=$('labelList').selectedIndex;
-  if(i<0)return;
-
-  const count=state.targets.reduce((n,y)=>n+(y===i?1:0),0);
-  if(count>0){
-    alert(`Cannot remove “${state.labels[i]}” because it already has ${count} saved windows. Add classes freely, but existing populated classes are protected.`);
+  if(state.recording||state.pendingWindows?.length){
+    alert('Stop or discard the pending recording before removing a class.');
     return;
   }
 
-  const removed=state.labels[i];
-  state.labels.splice(i,1);
+  const i=$('labelList').selectedIndex;
+  if(i<0)return;
+  const label=state.labels[i];
+  const count=state.targets.reduce((n,y)=>n+(y===i?1:0),0);
+  let pruned;
+  try{
+    pruned=datasetWithoutClass(state,i);
+  }catch(e){
+    alert(e.message);
+    log(`Class removal aborted: ${e.message}`);
+    return;
+  }
 
-  /* Removing an empty class shifts later label indices. */
-  state.targets=state.targets.map(y=>y>i?y-1:y);
+  const message=count>0
+    ? `Remove class “${label}” AND permanently discard its ${count} saved windows from the current dataset?\n\nThe other classes and their windows will be preserved and reindexed. Training/INT8 calibration must be repeated. This will not change your original .npz file until you save the revised dataset.\n\nThis action cannot be undone in the current page.`
+    : `Remove the empty class “${label}”? Remaining class indices will be updated, and any trained model will be invalidated.`;
+  if(!confirm(message))return;
 
+  Object.assign(state,pruned);
   invalidateModel();
   refreshLabels();
+  if(state.labels.length){
+    $('labelList').selectedIndex=Math.min(i,state.labels.length-1);
+    $('recordLabel').selectedIndex=Math.min(i,state.labels.length-1);
+  }
   refreshDataset();
-  log(`Removed empty class “${removed}”.`);
+  $('predictionLabel').textContent='—';
+  $('predictionConfidence').textContent='Dataset changed; the existing device model is unchanged until a new deployment.';
+  $('deployText').textContent='Dataset classes changed. Retrain and export/deploy a new INT8 model when ready.';
+  const remaining=state.targets.length;
+  $('recordProgress').textContent=`Removed “${label}” and ${count} windows. ${remaining} windows remain across ${state.labels.length} classes. Lock setup and retrain; save a new .npz to keep this change.`;
+  log(`Removed class “${label}” with ${count} saved windows; ${remaining} windows across ${state.labels.length} classes remain. Current model invalidated; existing device flash is unchanged.`);
 });
 $('normalizedLength').addEventListener('input',updateInputAndTopology);$('windowStride').addEventListener('input',updateInputAndTopology);$('representation').addEventListener('change',updateInputAndTopology);$('hiddenLayers').addEventListener('input',updateInputAndTopology);
 
@@ -367,7 +421,7 @@ window.noodleBLE.addEventListener('warning',e=>log(`BLE warning: ${e.detail.text
 
 window.noodleBLE.addEventListener('imu',e=>{const s=e.detail.sample;$('accelStatus').textContent=`ax ${s.ax.toFixed(3)} g   ay ${s.ay.toFixed(3)} g   az ${s.az.toFixed(3)} g`;$('gyroStatus').textContent=`gx ${s.gx.toFixed(1)} °/s   gy ${s.gy.toFixed(1)} °/s   gz ${s.gz.toFixed(1)} °/s`;pushLive(s);if(state.recording){if(state.recordStartTms==null)state.recordStartTms=s.t_ms;state.recording.push([s.ax,s.ay,s.az,s.gx,s.gy,s.gz,s.t_ms]);const secs=(state.recording.length/NAI.SAMPLE_RATE_HZ).toFixed(1);$('recordProgress').textContent=`Recording “${state.labels[state.pendingLabelIndex]}”: ${state.recording.length} samples · ${secs} s — perform it repeatedly, then STOP.`;}});
 
-window.noodleBLE.addEventListener('status',e=>{const text=e.detail.text;if(e.detail.notify)log(`Device: ${text}`);if(text==='MODE:T'){state.deviceMode='T';$('modeStatus').textContent='Current mode: TRAINING';$('deviceStatus').textContent='Training / streaming mode';}else if(text==='MODE:I'){state.deviceMode='I';$('modeStatus').textContent='Current mode: INFERENCE';$('deviceStatus').textContent='Inference mode — filling rolling window';}else if(text==='NO_MODEL'){$('deviceStatus').textContent='No committed model loaded';$('modeStatus').textContent='Current mode: TRAINING';state.deviceMode='T';}else if(text.startsWith('MODEL:READY:')){const p=text.split(':');const N=Number(p[2]),D=Number(p[3]),K=Number(p[4]),stride=Number(p[5]||5),thr=Number(p[6]||500)/1000;$('deployText').textContent=`Device INT8 model ready: ${N} samples · ${D} inputs · ${K} classes · threshold ${thr.toFixed(2)}.`;$('predictionMeta').textContent=`Device rolling window: ${N} samples (${(N/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · stride ${stride} samples (${(stride/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · accept confidence ≥ ${pct(thr)}`;}else if(text==='MODEL_STORED'){switchTab('deploy');$('deployText').textContent='MODEL_STORED — flash verified and committed. Loading model into Noodle…';}else if(text==='ERR:MODEL_LOAD'){$('deployText').textContent='Model was stored, but device-side Noodle loading failed.';}else if(text.startsWith('L:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]);state.modelLabels[idx]=p.slice(2).join(':');}}else if(text.startsWith('P:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]),conf=Number(p[2]);const label=state.modelLabels[idx]??state.labels[idx]??String(idx);$('predictionLabel').textContent=label;$('predictionConfidence').textContent=`Confidence ${pct(conf)} · accepted`;$('deviceStatus').textContent=`Inference: ${label} (${pct(conf)})`;}}else if(text.startsWith('U:')){const conf=Number(text.split(':')[1]);$('predictionLabel').textContent='UNKNOWN';$('predictionConfidence').textContent=`Confidence ${pct(conf)} · below model threshold`;$('deviceStatus').textContent=`Inference: UNKNOWN (${pct(conf)})`;}});
+window.noodleBLE.addEventListener('status',e=>{const text=e.detail.text;if(e.detail.notify)log(`Device: ${text}`);if(text==='MODE:T'){state.deviceMode='T';$('modeStatus').textContent='Current mode: TRAINING';$('deviceStatus').textContent='Training / streaming mode';}else if(text==='MODE:I'){state.deviceMode='I';$('modeStatus').textContent='Current mode: INFERENCE';$('deviceStatus').textContent='Inference mode — filling rolling window';}else if(text==='NO_MODEL'){$('deviceStatus').textContent='No committed model loaded';$('modeStatus').textContent='Current mode: TRAINING';state.deviceMode='T';}else if(text.startsWith('MODEL:READY:')){const p=text.split(':');const N=Number(p[2]),D=Number(p[3]),K=Number(p[4]),stride=Number(p[5]||5),thr=Number(p[6]||500)/1000;$('deployText').textContent=`Device INT8 model ready: ${N} samples · ${D} inputs · ${K} classes · threshold ${thr.toFixed(2)}.`;$('predictionMeta').textContent=`Device rolling window: ${N} samples (${(N/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · stride ${stride} samples (${(stride/NAI.SAMPLE_RATE_HZ).toFixed(2)} s) · accept confidence ≥ ${pct(thr)}`;}else if(text==='MODEL_STORED'){switchTab('deploy');$('deployText').textContent='MODEL_STORED — flash verified and committed. Loading model into Noodle…';}else if(text==='ERR:MODEL_LOAD'){$('deployText').textContent='Model was stored, but device-side Noodle loading failed.';}else if(text.startsWith('L:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]);state.modelLabels[idx]=p.slice(2).join(':');}}else if(text.startsWith('P:')){const p=text.split(':');if(p.length>=3){const idx=Number(p[1]),conf=Number(p[2]);const label=state.modelLabels[idx]??String(idx);$('predictionLabel').textContent=label;$('predictionConfidence').textContent=`Confidence ${pct(conf)} · accepted`;$('deviceStatus').textContent=`Inference: ${label} (${pct(conf)})`;}}else if(text.startsWith('U:')){const conf=Number(text.split(':')[1]);$('predictionLabel').textContent='UNKNOWN';$('predictionConfidence').textContent=`Confidence ${pct(conf)} · below model threshold`;$('deviceStatus').textContent=`Inference: UNKNOWN (${pct(conf)})`;}});
 
 function pushLive(s){const L=250;state.live.t.push(s.t_ms/1000);const av=[s.ax,s.ay,s.az],gv=[s.gx,s.gy,s.gz];for(let c=0;c<3;c++){state.live.accel[c].push(av[c]);state.live.gyro[c].push(gv[c]);}if(state.live.t.length>L){state.live.t.shift();for(const a of state.live.accel)a.shift();for(const a of state.live.gyro)a.shift();}drawLineChart($('accelCanvas'),state.live.accel,['ax','ay','az']);drawLineChart($('gyroCanvas'),state.live.gyro,['gx','gy','gz']);}
 $('clearPlotBtn').addEventListener('click',()=>{state.live={t:[],accel:[[],[],[]],gyro:[[],[],[]]};drawLiveEmpty();});
