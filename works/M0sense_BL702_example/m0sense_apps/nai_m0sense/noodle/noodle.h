@@ -406,6 +406,9 @@ struct FCNFile {
 #if defined(NOODLE_USE_INT8)
   const char *multiplier_fn = nullptr;
   const char *shift_fn = nullptr;
+  // Packed records: for each output, little-endian int32 bias, mult, shift.
+  // If nonnull, this supersedes bias_fn/multiplier_fn/shift_fn for FCNFile.
+  const char *metadata_fn = nullptr;
   float input_scale = 1.0f;
   float output_scale = 1.0f;
   int32_t input_zero_point = 0;

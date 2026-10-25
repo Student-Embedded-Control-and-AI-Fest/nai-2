@@ -9,6 +9,41 @@ https://student-embedded-control-and-ai-fest.github.io/nai-2/
 
 ---
 
+0. Install `bflb-mcu-tool-uart`
+
+```
+python -m pip install bflb-mcu-tool-uart
+```
+
+1. Install the SiFive toolchain
+
+```
+cd ~/works/M0sense_BL702_example
+git clone https://github.com/wonderfullook/toolchain_gcc_sifive_linux.git
+```
+
+If that repository is unavailable, the Bouffalo SDK also documents this alternative source: 
+
+```
+git clone https://gitee.com/bouffalolab/toolchain_gcc_sifive_linux.git
+```
+
+Use the alternative only if the first clone fails.
+
+2. Restore the compiler path
+
+```
+export PATH="$PWD/toolchain_gcc_sifive_linux/bin:$PATH"
+
+which riscv64-unknown-elf-gcc
+riscv64-unknown-elf-gcc --version
+riscv64-unknown-elf-g++ --version
+```
+
+We expect GCC 10.2.0 from the original SiFive distribution.
+
+3. Build the firmware
+
 ```
 cd ~/works/M0sense_BL702_example
 rm -rf bl_mcu_sdk/build
@@ -29,7 +64,7 @@ The limit is:
 319488 bytes
 ```
 
-Then flash:
+4. Flash the firmware
 
 ```bash
 cd ~/works/M0sense_BL702_example

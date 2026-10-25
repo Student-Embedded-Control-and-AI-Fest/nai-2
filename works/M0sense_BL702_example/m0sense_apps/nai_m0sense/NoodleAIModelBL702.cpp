@@ -50,6 +50,8 @@ void NoodleAIModelBL702::clearRuntime()
 
     for (uint16_t i = 0; i < MAX_LAYERS; ++i) {
         _layers[i] = FCNFile{};
+        _packedLayers[i] = false;
+        _metadataNames[i][0] = '\0';
         _weightNames[i][0] = '\0';
         _biasNames[i][0] = '\0';
         _multiplierNames[i][0] = '\0';
@@ -291,14 +293,19 @@ bool NoodleAIModelBL702::validateParameterFiles(char slot)
         if (!slotFilename(slot, canonical, name, sizeof(name)) ||
             !fileHasSize(name, (size_t)_dims[l] * O)) return false;
 
+        // New Noodle packed FCN files store 3 x int32 LE for each output.
+        snprintf(canonical, sizeof(canonical), "p%02u.bin", l);
+        if (!slotFilename(slot, canonical, name, sizeof(name))) return false;
+        _packedLayers[l] = fileHasSize(name, 12u * O);
+        if (_packedLayers[l]) continue;
+
+        // Read-only legacy compatibility for packages already on devices.
         snprintf(canonical, sizeof(canonical), "b%02u.bin", l);
         if (!slotFilename(slot, canonical, name, sizeof(name)) ||
             !fileHasSize(name, sizeof(int32_t) * O)) return false;
-
         snprintf(canonical, sizeof(canonical), "m%02u.bin", l);
         if (!slotFilename(slot, canonical, name, sizeof(name)) ||
             !fileHasSize(name, sizeof(int32_t) * O)) return false;
-
         snprintf(canonical, sizeof(canonical), "s%02u.bin", l);
         if (!slotFilename(slot, canonical, name, sizeof(name)) ||
             !fileHasSize(name, sizeof(int32_t) * O)) return false;
@@ -358,6 +365,8 @@ void NoodleAIModelBL702::configureLayers(char slot)
 
         snprintf(canonical, sizeof(canonical), "w%02u.bin", l);
         slotFilename(slot, canonical, _weightNames[l], sizeof(_weightNames[l]));
+        snprintf(canonical, sizeof(canonical), "p%02u.bin", l);
+        slotFilename(slot, canonical, _metadataNames[l], sizeof(_metadataNames[l]));
         snprintf(canonical, sizeof(canonical), "b%02u.bin", l);
         slotFilename(slot, canonical, _biasNames[l], sizeof(_biasNames[l]));
         snprintf(canonical, sizeof(canonical), "m%02u.bin", l);
@@ -367,9 +376,13 @@ void NoodleAIModelBL702::configureLayers(char slot)
 
         _layers[l] = FCNFile{};
         _layers[l].weight_fn = _weightNames[l];
-        _layers[l].bias_fn = _biasNames[l];
-        _layers[l].multiplier_fn = _multiplierNames[l];
-        _layers[l].shift_fn = _shiftNames[l];
+        if (_packedLayers[l]) {
+            _layers[l].metadata_fn = _metadataNames[l];
+        } else {
+            _layers[l].bias_fn = _biasNames[l];
+            _layers[l].multiplier_fn = _multiplierNames[l];
+            _layers[l].shift_fn = _shiftNames[l];
+        }
         _layers[l].O = _dims[l + 1];
         _layers[l].act = (l + 1 < _nLayers) ? ACT_RELU : ACT_NONE;
         _layers[l].input_scale = (l == 0) ? _inputScale : _outputScales[l - 1];

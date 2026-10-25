@@ -158,6 +158,8 @@ private:
     FCNFile _layers[MAX_LAYERS]{};
     char _labels[MAX_CLASSES][MAX_LABEL_BYTES + 1]{};
 
+    bool _packedLayers[MAX_LAYERS]{};
+    char _metadataNames[MAX_LAYERS][NOODLE_MAX_FILENAME + 1]{};
     char _weightNames[MAX_LAYERS][NOODLE_MAX_FILENAME + 1]{};
     char _biasNames[MAX_LAYERS][NOODLE_MAX_FILENAME + 1]{};
     char _multiplierNames[MAX_LAYERS][NOODLE_MAX_FILENAME + 1]{};

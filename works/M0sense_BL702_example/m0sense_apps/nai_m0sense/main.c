@@ -101,13 +101,14 @@ static int s_mode2_inference_enabled = 0;
 
 
 enum {
-    OP_SET_TRAINING  = 0x01,
-    OP_SET_INFERENCE = 0x02,
-    OP_DEPLOY_BEGIN  = 0x20,
-    OP_FILE_BEGIN    = 0x21,
-    OP_FILE_END      = 0x22,
-    OP_DEPLOY_COMMIT = 0x23,
-    OP_DEPLOY_ABORT  = 0x24,
+    OP_SET_TRAINING     = 0x01,
+    OP_SET_INFERENCE    = 0x02,
+    OP_DEPLOY_BEGIN     = 0x20,
+    OP_FILE_BEGIN       = 0x21,
+    OP_FILE_END         = 0x22,
+    OP_DEPLOY_COMMIT    = 0x23,
+    OP_DEPLOY_ABORT     = 0x24,
+    OP_GET_CAPABILITIES = 0x25,
 };
 
 static void imu_ccc_changed(
@@ -541,6 +542,11 @@ static void process_control_command(void)
         mode2_reset_ring();
         (void)notify_status("MODE:I");
         mode2_notify_model_info();
+        break;
+
+    case OP_GET_CAPABILITIES:
+        /* Non-destructive response, before browser issues DEPLOY_BEGIN. */
+        (void)notify_status("CAPS:PACKED_INT8:1");
         break;
 
     case OP_DEPLOY_BEGIN: {

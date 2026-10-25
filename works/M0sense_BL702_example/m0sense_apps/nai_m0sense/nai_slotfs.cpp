@@ -134,7 +134,8 @@ bool nai_slotfs_canonical_name_allowed(const char *name)
     if (strlen(name) != 7) return false;
 
     if ((name[0] != 'w' && name[0] != 'b' &&
-         name[0] != 'm' && name[0] != 's') ||
+         name[0] != 'm' && name[0] != 's' &&
+         name[0] != 'p') ||
         name[3] != '.' ||
         strcmp(name + 4, "bin") != 0) return false;
 

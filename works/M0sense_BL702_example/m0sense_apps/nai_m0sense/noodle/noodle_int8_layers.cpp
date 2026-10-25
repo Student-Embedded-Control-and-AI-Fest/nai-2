@@ -590,6 +590,18 @@ uint16_t noodle_i8_fcn(NoodleTensor *input, const FCNMem &layer,
   return layer.O;
 }
 
+// Same packed record format as the current Noodle FCNFile::metadata_fn API.
+// Do not read an int32 directly from a potentially short flash read.
+static int32_t q_fcn_packed_le32(const uint8_t *p) {
+  const uint32_t value = static_cast<uint32_t>(p[0]) |
+      (static_cast<uint32_t>(p[1]) << 8) |
+      (static_cast<uint32_t>(p[2]) << 16) |
+      (static_cast<uint32_t>(p[3]) << 24);
+  int32_t signed_value;
+  memcpy(&signed_value, &value, sizeof(signed_value));
+  return signed_value;
+}
+
 uint16_t noodle_i8_fcn(NoodleTensor *input, const FCNFile &layer,
                      NoodleTensor *output) {
   if (!input || !output || input == output || !input->buffer.data ||
@@ -600,31 +612,58 @@ uint16_t noodle_i8_fcn(NoodleTensor *input, const FCNFile &layer,
                                                layer.output_scale,
                                                layer.output_zero_point);
   if (!dst) return 0;
-  NDL_File wf, bf, mf, sf;
-  if (!q_open_required(layer.weight_fn, &wf) ||
-      !q_open_required(layer.multiplier_fn, &mf) ||
-      !q_open_required(layer.shift_fn, &sf)) {
-    q_close_if(&wf); q_close_if(&mf); q_close_if(&sf); return 0;
+
+  // Packed Noodle path opens exactly two files: weights and metadata.
+  // Legacy four-file packages remain loadable for existing M0Sense devices.
+  const bool packed = layer.metadata_fn != nullptr;
+  NDL_File wf, bf, mf, sf, pf;
+  if (!q_open_required(layer.weight_fn, &wf)) return 0;
+  if (packed) {
+    if (!q_open_required(layer.metadata_fn, &pf)) {
+      q_close_if(&wf); return 0;
+    }
+  } else {
+    if (!q_open_required(layer.multiplier_fn, &mf) ||
+        !q_open_required(layer.shift_fn, &sf)) {
+      q_close_if(&wf); q_close_if(&mf); q_close_if(&sf); return 0;
+    }
+    if (layer.bias_fn && !q_open_required(layer.bias_fn, &bf)) {
+      q_close_if(&wf); q_close_if(&mf); q_close_if(&sf); return 0;
+    }
   }
-  const bool has_bias = layer.bias_fn && q_open_required(layer.bias_fn, &bf);
-  if (layer.bias_fn && !has_bias) { q_close_if(&wf); q_close_if(&mf); q_close_if(&sf); return 0; }
   int8_t *row = q_filter_require(I);
-  if (!row) { q_close_if(&wf); q_close_if(&bf); q_close_if(&mf); q_close_if(&sf); return 0; }
+  if (!row) {
+    q_close_if(&wf); q_close_if(&pf); q_close_if(&bf);
+    q_close_if(&mf); q_close_if(&sf); return 0;
+  }
   const int8_t *src = input->buffer.data;
   for (uint16_t o = 0; o < layer.O; ++o) {
     if (q_read_i8_block(wf, row, I) != I) {
-      q_close_if(&wf); q_close_if(&bf); q_close_if(&mf); q_close_if(&sf); return 0;
+      q_close_if(&wf); q_close_if(&pf); q_close_if(&bf);
+      q_close_if(&mf); q_close_if(&sf); return 0;
     }
-    const int32_t acc = q_fcn_dot(src, row, I, layer.input_zero_point,
-                                  has_bias ? noodle_read_i32(bf) : 0);
-    const int32_t mult = noodle_read_i32(mf);
-    const int32_t shift = noodle_read_i32(sf);
+    int32_t bias, mult, shift;
+    if (packed) {
+      uint8_t rec[12];
+      if (noodle_read_raw(pf, rec, sizeof(rec)) != sizeof(rec)) {
+        q_close_if(&wf); q_close_if(&pf); return 0;
+      }
+      bias = q_fcn_packed_le32(rec);
+      mult = q_fcn_packed_le32(rec + 4);
+      shift = q_fcn_packed_le32(rec + 8);
+    } else {
+      bias = bf ? noodle_read_i32(bf) : 0;
+      mult = noodle_read_i32(mf);
+      shift = noodle_read_i32(sf);
+    }
+    const int32_t acc = q_fcn_dot(src, row, I, layer.input_zero_point, bias);
     dst[o] = static_cast<int8_t>(q_apply_output(acc, mult, shift,
                                                 layer.output_zero_point,
                                                 layer.activation_min,
                                                 layer.activation_max));
   }
-  q_close_if(&wf); q_close_if(&bf); q_close_if(&mf); q_close_if(&sf);
+  q_close_if(&wf); q_close_if(&pf); q_close_if(&bf);
+  q_close_if(&mf); q_close_if(&sf);
   return layer.O;
 }
 

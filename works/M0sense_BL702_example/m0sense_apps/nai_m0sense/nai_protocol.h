@@ -20,6 +20,7 @@ enum NaiControlOpcode : uint8_t {
     OP_FILE_END      = 0x22,
     OP_DEPLOY_COMMIT = 0x23,
     OP_DEPLOY_ABORT  = 0x24,
+    OP_GET_CAPABILITIES = 0x25, // safe pre-erase packed-format handshake
 };
 
 enum class NaiDeviceMode : uint8_t {
