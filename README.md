@@ -9,6 +9,9 @@ https://student-embedded-control-and-ai-fest.github.io/nai-2/
 
 ---
 
+
+This README file assumes that the working folder is in `~/works/M0sense_BL702_example/`.
+
 0. Install `bflb-mcu-tool-uart`
 
 ```
@@ -30,7 +33,7 @@ git clone https://gitee.com/bouffalolab/toolchain_gcc_sifive_linux.git
 
 Use the alternative only if the first clone fails.
 
-2. Restore the compiler path
+2. Set the compiler path
 
 ```
 export PATH="$PWD/toolchain_gcc_sifive_linux/bin:$PATH"
