@@ -17,6 +17,7 @@ const NAI_BLE = Object.freeze({
   OP_FILE_END: 0x22,
   OP_DEPLOY_COMMIT: 0x23,
   OP_DEPLOY_ABORT: 0x24,
+  OP_GET_CAPABILITIES: 0x25,
   SAMPLE_PERIOD_MS: 20,
 });
 
@@ -151,6 +152,15 @@ class NoodleAIBLE extends EventTarget {
     const total=entries.reduce((s,[,b])=>s+b.byteLength,0);
     if(total>NAI_MODEL_PAYLOAD_CAPACITY) {
       throw new Error(`NAI4 raw files ${(total/1024).toFixed(1)} KiB exceed the current M0Sense single-slot payload capacity ${(NAI_MODEL_PAYLOAD_CAPACITY/1024).toFixed(0)} KiB`);
+    }
+    // A packed package MUST NOT trigger erase on old Mode 2 firmware.
+    // Older firmware silently ignores the capability query. Check before BEGIN.
+    const hasPacked=entries.some(([name])=>/^p\d{2}\.bin$/.test(name));
+    if(hasPacked){
+      const ack=this.waitStatus('CAPS:PACKED_INT8:1',2500,true);
+      await this.writeControl(Uint8Array.of(NAI_BLE.OP_GET_CAPABILITIES));
+      try { await ack; }
+      catch(e) { throw new Error('M0Sense firmware does not confirm packed INT8 support. Flash the updated Mode 2 firmware BEFORE deploying this model. Existing flash model was NOT erased.'); }
     }
     let sent=0;
     try {

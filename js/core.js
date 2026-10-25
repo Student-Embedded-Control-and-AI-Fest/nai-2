@@ -646,6 +646,18 @@ function int32LE(values) {
   for(let i=0;i<values.length;i++)dv.setInt32(i*4,Number(values[i]),true);
   return new Uint8Array(out);
 }
+// Noodle FCNFile packed format: for each output neuron [bias,mult,shift],
+// three signed 32-bit little-endian values (12 bytes per output).
+function packedFcnMetadata(layer){
+  const bytes=new Uint8Array(layer.O*12), dv=new DataView(bytes.buffer);
+  for(let o=0;o<layer.O;o++){
+    dv.setInt32(o*12,Number(layer.b[o]),true);
+    dv.setInt32(o*12+4,Number(layer.mult[o]),true);
+    dv.setInt32(o*12+8,Number(layer.shift[o]),true);
+  }
+  return bytes;
+}
+
 function readInt32LE(bytes) {
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength), out=new Int32Array(bytes.byteLength/4);
   for(let i=0;i<out.length;i++)out[i]=dv.getInt32(i*4,true);
@@ -897,7 +909,7 @@ function sweepConfidenceThreshold(probs,y,{min=0.30,max=0.90,step=0.01,minCovera
 
 async function exportNai4Int8(model,scaler,labels,N,rep,calibrationRows,validationRows,validationY,strideSamples=5) {
   const floatLayers=await extractTfWeightsOI(model);
-  if(floatLayers.length>4)throw new Error('Current single-slot INT8 deployment supports at most 4 Dense layers (3 hidden + output): 3 base files + 4 files per layer must fit the 19-file slot header.');
+  if(floatLayers.length>8)throw new Error('Current runtime supports at most 8 Dense layers; ensure total package size and target SRAM fit.');
   const dims=[floatLayers[0].I,...floatLayers.map(l=>l.O)];
   const binary=labels.length===2;
   const activations=calibrateActivationQParams(floatLayers,calibrationRows);
@@ -924,9 +936,7 @@ async function exportNai4Int8(model,scaler,labels,N,rep,calibrationRows,validati
   qLayers.forEach((l,i)=>{
     const n=String(i).padStart(2,'0');
     files[`w${n}.bin`]=int8Bytes(l.w);
-    files[`b${n}.bin`]=int32LE(l.b);
-    files[`m${n}.bin`]=int32LE(l.mult);
-    files[`s${n}.bin`]=int32LE(l.shift);
+    files[`p${n}.bin`]=packedFcnMetadata(l);
   });
   const total=Object.values(files).reduce((s,b)=>s+b.byteLength,0);
   if(total>MAX_PACKAGE_BYTES)throw new Error(`Raw NAI4 package ${(total/1024).toFixed(1)} KiB exceeds 550 KiB`);
@@ -998,7 +1008,13 @@ async function loadNaiPackage(file) {
   const cfgBytes=await get('cfg.bin'),cfg=parseCfg(cfgBytes);
   const names=['cfg.bin','mean.bin','scale.bin'];
   for(let i=0;i<cfg.nLayers;i++){
-    const n=String(i).padStart(2,'0');names.push(`w${n}.bin`,`b${n}.bin`);if(cfg.int8)names.push(`m${n}.bin`,`s${n}.bin`);
+    const n=String(i).padStart(2,'0');
+    if(cfg.int8) {
+      // Accept new Noodle packed models and old Mode 2 packages for redeploy.
+      const hasPacked=!!zip.file(`p${n}.bin`);
+      if(hasPacked) names.push(`w${n}.bin`,`p${n}.bin`);
+      else names.push(`w${n}.bin`,`b${n}.bin`,`m${n}.bin`,`s${n}.bin`);
+    } else names.push(`w${n}.bin`,`b${n}.bin`);
   }
   const files={};for(const name of names)files[name]=await get(name);
   const total=Object.values(files).reduce((s,b)=>s+b.byteLength,0);
