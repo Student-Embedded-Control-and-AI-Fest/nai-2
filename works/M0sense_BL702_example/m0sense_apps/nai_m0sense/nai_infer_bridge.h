@@ -20,6 +20,10 @@ extern "C" {
  *   6 velocity+quaternion
  */
 int nai_infer_load_active(void);
+/* The FCN-only timing is available when NAI_BENCH_FCN is enabled. */
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+uint32_t nai_infer_last_fcn_us(void);
+#endif
 void nai_infer_clear(void);
 bool nai_infer_loaded(void);
 uint16_t nai_infer_window_length(void);

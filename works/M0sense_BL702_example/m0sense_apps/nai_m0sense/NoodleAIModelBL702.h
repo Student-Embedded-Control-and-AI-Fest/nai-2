@@ -71,6 +71,9 @@ public:
     const char *label(uint16_t index) const;
 
     bool predict(const float *x, uint16_t &classIndex, float &confidence);
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    uint32_t lastFcnUs() const { return _lastFcnUs; }
+#endif
     size_t tensorArenaBytes() const;
 
     static bool canonicalFilenameAllowed(const char *name);
@@ -165,6 +168,9 @@ private:
     char _multiplierNames[MAX_LAYERS][NOODLE_MAX_FILENAME + 1]{};
     char _shiftNames[MAX_LAYERS][NOODLE_MAX_FILENAME + 1]{};
 
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    uint32_t _lastFcnUs = 0;
+#endif
     NoodleTensor _actA{};
     NoodleTensor _actB{};
 };

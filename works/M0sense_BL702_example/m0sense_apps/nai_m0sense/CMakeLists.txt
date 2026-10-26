@@ -1,5 +1,12 @@
 set(BSP_COMMON_DIR ${CMAKE_SOURCE_DIR}/bsp/bsp_common)
 
+# Research-only serial timing instrumentation. Set to 0 for normal deployment.
+# Does not change BLE messages, the rolling-window stride or model arithmetic.
+if(NOT DEFINED NAI_BENCH_FCN)
+    set(NAI_BENCH_FCN 1)
+endif()
+add_compile_definitions(NAI_BENCH_FCN=${NAI_BENCH_FCN})
+
 # Mode 2 v0.4.5 = INT8 Noodle MLP + cfg-defined filtering + startup gyro bias calibration.
 add_compile_definitions(
     NOODLE_USE_INT8

@@ -9,6 +9,8 @@ extern "C" {
 
 bool nai_imu_bridge_init(void);
 bool nai_imu_bridge_read(float s[6]);
+bool nai_imu_bridge_gyro_calibrated(void);
+void nai_imu_bridge_gyro_bias(float out3[3]);
 
 #ifdef __cplusplus
 }

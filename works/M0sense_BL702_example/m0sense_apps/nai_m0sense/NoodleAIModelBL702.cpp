@@ -7,6 +7,11 @@
 
 #include "nai_slotfs.h"
 #include "noodle/noodle_int8.h"
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+extern "C" {
+#include "bflb_platform.h"
+}
+#endif
 
 namespace {
 constexpr uint16_t MODEL_VERSION = 4;
@@ -35,6 +40,9 @@ void NoodleAIModelBL702::initTensorsIfNeeded()
 
 void NoodleAIModelBL702::clearRuntime()
 {
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    _lastFcnUs = 0;
+#endif
     delete[] _mean;
     delete[] _scale;
     _mean = nullptr;
@@ -474,6 +482,9 @@ bool NoodleAIModelBL702::predict(const float *x,
                                  uint16_t &classIndex,
                                  float &confidence)
 {
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    _lastFcnUs = 0;
+#endif
     if (!_loaded || !x || !_tensorsInitialized) return false;
 
     int8_t *input = noodle_i8_tensor_require_vector(
@@ -489,6 +500,9 @@ bool NoodleAIModelBL702::predict(const float *x,
     NoodleTensor *current = &_actA;
     NoodleTensor *next = &_actB;
 
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    const uint64_t fcn_start_us = bflb_platform_get_time_us();
+#endif
     for (uint16_t l = 0; l < _nLayers; ++l) {
         if (noodle_fcn(current, next, _layers[l]) != _dims[l + 1])
             return false;
@@ -496,6 +510,9 @@ bool NoodleAIModelBL702::predict(const float *x,
         current = next;
         next = tmp;
     }
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    _lastFcnUs = (uint32_t)(bflb_platform_get_time_us() - fcn_start_us);
+#endif
 
     if (_binaryClassifier) {
         if (noodle_sigmoid(current) != 1) return false;

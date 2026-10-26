@@ -1,4 +1,8 @@
 #include "bflb_platform.h"
+
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+#include "usb_stdio.h"
+#endif
 #include "hal_gpio.h"
 
 #include <stdbool.h>
@@ -98,16 +102,17 @@ static volatile int s_commit_active = 0;
 
 /* Mode 2 runtime command state is simple enough to keep as one flag. */
 static int s_mode2_inference_enabled = 0;
+static int s_imu_init_ok = 0;
 
 
 enum {
-    OP_SET_TRAINING     = 0x01,
-    OP_SET_INFERENCE    = 0x02,
-    OP_DEPLOY_BEGIN     = 0x20,
-    OP_FILE_BEGIN       = 0x21,
-    OP_FILE_END         = 0x22,
-    OP_DEPLOY_COMMIT    = 0x23,
-    OP_DEPLOY_ABORT     = 0x24,
+    OP_SET_TRAINING  = 0x01,
+    OP_SET_INFERENCE = 0x02,
+    OP_DEPLOY_BEGIN  = 0x20,
+    OP_FILE_BEGIN    = 0x21,
+    OP_FILE_END      = 0x22,
+    OP_DEPLOY_COMMIT = 0x23,
+    OP_DEPLOY_ABORT  = 0x24,
     OP_GET_CAPABILITIES = 0x25,
 };
 
@@ -866,11 +871,21 @@ static void mode2_run_prediction(void)
 
     uint16_t cls = 0;
     float confidence = 0.0f;
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    /* Includes representation processing, scaling, INT8 FCN and output
+     * handling, but excludes ring-window copying and serial/BLE logging. */
+    const uint64_t prediction_start_us = bflb_platform_get_time_us();
+#endif
     const int rc = nai_infer_predict_raw6(
         s_mode2_raw_window,
         s_mode2_window_samples,
         &cls,
         &confidence);
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    const uint32_t prediction_us =
+        (uint32_t)(bflb_platform_get_time_us() - prediction_start_us);
+    const uint32_t fcn_us = nai_infer_last_fcn_us();
+#endif
 
     if (rc != 0) {
         (void)notify_status("ERR:PRED");
@@ -895,6 +910,17 @@ static void mode2_run_prediction(void)
                  (unsigned)(milli % 1000u));
     }
     (void)notify_status(msg);
+
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    /* Print after measuring inference. Never include printf/USB in timing.
+     * FLASH reflects NAI-2's native slot flash (not ESP32 FFat or SRAM).
+     * Older stored four-file models are still loadable, so avoid falsely
+     * declaring the active model packed until its format can be queried. */
+    printf("NAI_FCN backend=FLASH fcn_us=%lu\n", (unsigned long)fcn_us);
+    printf("PRED class=%u confidence=%u.%03u inference_us=%lu\n",
+           (unsigned)cls, (unsigned)(milli / 1000u),
+           (unsigned)(milli % 1000u), (unsigned long)prediction_us);
+#endif
 }
 
 /* -------------------------------------------------------------------------- */
@@ -998,6 +1024,8 @@ static void app_task(void *arg)
     uint32_t last_blink_ms = last_sample_ms;
 
     int blue_on = 0;
+    uint8_t gyro_status_phase = 0;
+    uint32_t gyro_status_after_ms = 0;
 
     struct NaiImuPacket packet;
     memset(&packet, 0, sizeof(packet));
@@ -1040,6 +1068,38 @@ static void app_task(void *arg)
             }
             (void)notify_status(
                 s_mode2_inference_enabled ? "MODE:I" : "MODE:T");
+            // Defer these status messages to separate BLE iterations, so
+            // they do not compete with the existing MODEL:READY and L: events.
+            gyro_status_phase = 1;
+            gyro_status_after_ms = now;
+        }
+
+        // Broadcast startup calibration result once per status subscription.
+        // Units in GBc are centidegrees per second (signed integers).
+        if (gyro_status_phase &&
+            (uint32_t)(now - gyro_status_after_ms) >= 125u) {
+            if (!s_conn || !s_status_notify_enabled) {
+                gyro_status_phase = 0;
+            } else if (gyro_status_phase == 1) {
+                const char *cal_status = !s_imu_init_ok ? "GYRO_CAL:IMU_ERR" :
+                    (nai_imu_bridge_gyro_calibrated() ? "GYRO_CAL:OK" :
+                     "GYRO_CAL:UNSTABLE");
+                if (notify_status(cal_status) == 0) {
+                    gyro_status_phase = (s_imu_init_ok &&
+                        nai_imu_bridge_gyro_calibrated()) ? 2 : 0;
+                }
+                gyro_status_after_ms = now;
+            } else {
+                float bias[3];
+                nai_imu_bridge_gyro_bias(bias);
+                char bias_msg[48];
+                const long bx = (long)(bias[0] * 100.0f + (bias[0] >= 0.0f ? 0.5f : -0.5f));
+                const long by = (long)(bias[1] * 100.0f + (bias[1] >= 0.0f ? 0.5f : -0.5f));
+                const long bz = (long)(bias[2] * 100.0f + (bias[2] >= 0.0f ? 0.5f : -0.5f));
+                snprintf(bias_msg, sizeof(bias_msg), "GBc:%ld,%ld,%ld", bx, by, bz);
+                if (notify_status(bias_msg) == 0) gyro_status_phase = 0;
+                gyro_status_after_ms = now;
+            }
         }
 
         /* -------------------------------------------------------------- */
@@ -1252,6 +1312,13 @@ int main(void)
 {
     bflb_platform_init(0);
 
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+    /* Start USB CDC-ACM for research timing logs.
+     * The standalone IMU sample uses this same SDK interface.
+     * Printing occurs only after timed execution sections. */
+    usb_stdio_init();
+#endif
+
     gpio_set_mode(LED_B_PIN, GPIO_OUTPUT_PP_MODE);
     gpio_set_mode(LED_G_PIN, GPIO_OUTPUT_PP_MODE);
     gpio_set_mode(LED_R_PIN, GPIO_OUTPUT_PP_MODE);
@@ -1282,6 +1349,7 @@ int main(void)
      * Keep BLE alive even if IMU init fails so debugging stays easy.
      */
     const bool imu_ok = nai_imu_bridge_init();
+    s_imu_init_ok = imu_ok ? 1 : 0;
     if (!imu_ok) {
         gpio_write(LED_R_PIN, 0);
     }

@@ -1,4 +1,5 @@
 #include "nai_imu.h"
+#include "nai_gyro_calibration.h"
 
 extern "C" {
 #include "bflb_platform.h"
@@ -24,14 +25,12 @@ constexpr float ACC_SCALE_G = 4.0f / 32768.0f;
 constexpr float GYR_SCALE_DPS = 1024.0f / 32768.0f;
 
 /*
- * Startup gyro zero-rate calibration.
- *
- * Keep the M0Sense motionless for about 1.2 s after reset/power-on.
- * We discard 20 samples, average the next 100, and subtract the resulting
- * gx/gy/gz zero-rate bias from all subsequent gyro output.
+ * Startup zero-rate calibration requires known stillness.  The QMI8658 has
+ * independent accel/gyro sample rates; these are approximate sampling periods.
+ * Do not overwrite the bias when the stationarity checks fail.
  */
-constexpr uint16_t GYRO_CAL_WARMUP_SAMPLES = 20;
-constexpr uint16_t GYRO_CAL_SAMPLES = 100;
+constexpr uint16_t GYRO_CAL_WARMUP_SAMPLES = 50;  // approx. 0.5 s
+constexpr uint16_t GYRO_CAL_SAMPLES = 300;        // approx. 3.0 s
 constexpr uint16_t GYRO_CAL_DELAY_MS = 10;
 
 struct device *s_i2c = nullptr;
@@ -99,10 +98,11 @@ bool read_raw_scaled(float out6[6])
     return true;
 }
 
+// Return false only for an IMU read error; a moving board remains usable
+// with correction DISABLED, and the browser is told the calibration failed.
 bool calibrate_gyro_zero_rate()
 {
     float s[6];
-
     s_gyro_calibrated = false;
     s_gyro_bias_dps[0] = 0.0f;
     s_gyro_bias_dps[1] = 0.0f;
@@ -113,24 +113,22 @@ bool calibrate_gyro_zero_rate()
         bflb_platform_delay_ms(GYRO_CAL_DELAY_MS);
     }
 
-    double sx = 0.0;
-    double sy = 0.0;
-    double sz = 0.0;
-
+    NaiGyroCalAccumulator stats;
     for (uint16_t i = 0; i < GYRO_CAL_SAMPLES; ++i) {
         if (!read_raw_scaled(s)) return false;
-
-        sx += s[3];
-        sy += s[4];
-        sz += s[5];
-
+        stats.add(s);
         bflb_platform_delay_ms(GYRO_CAL_DELAY_MS);
     }
 
-    s_gyro_bias_dps[0] = (float)(sx / (double)GYRO_CAL_SAMPLES);
-    s_gyro_bias_dps[1] = (float)(sy / (double)GYRO_CAL_SAMPLES);
-    s_gyro_bias_dps[2] = (float)(sz / (double)GYRO_CAL_SAMPLES);
+    float candidate[3];
+    if (!stats.stationary_bias(candidate)) {
+        // Never force a stable but unverified motion interval to gyro zero.
+        return true;
+    }
 
+    s_gyro_bias_dps[0] = candidate[0];
+    s_gyro_bias_dps[1] = candidate[1];
+    s_gyro_bias_dps[2] = candidate[2];
     s_gyro_calibrated = true;
     return true;
 }
@@ -178,8 +176,8 @@ bool nai_imu_init()
     if (!masked_is(CTRL7, 0x03, 0x03)) return false;
 
     /*
-     * IMPORTANT:
-     * Board must be motionless during this approximately 1.2-second phase.
+     * Board must remain motionless for approx. 3.5 seconds after init.
+     * Gyro bias is applied only if BOTH accelerometer and gyro were stable.
      */
     if (!calibrate_gyro_zero_rate()) return false;
 
@@ -202,4 +200,18 @@ bool nai_imu_read(float out6[6])
     out6[5] = s[5] - (s_gyro_calibrated ? s_gyro_bias_dps[2] : 0.0f);
 
     return true;
+}
+
+// Used by the existing BLE status channel.  No new protocol/opcode is needed.
+bool nai_imu_gyro_calibrated()
+{
+    return s_gyro_calibrated;
+}
+
+void nai_imu_gyro_bias(float out3[3])
+{
+    if (!out3) return;
+    for (uint8_t k = 0; k < 3; ++k) {
+        out3[k] = s_gyro_calibrated ? s_gyro_bias_dps[k] : 0.0f;
+    }
 }

@@ -77,3 +77,21 @@ bflb-mcu-tool-uart \
   --baudrate=2000000 \
   --firmware=bl_mcu_sdk/out/m0sense_apps/nai_m0sense/nai_m0sense_bl702.bin
 ```
+
+5. BL702's flash layut
+
+```
+BL702 Flash (512 KiB)
+┌─────────────────────────────┐ 0x00000
+│ Boot / firmware area        │
+│                             │
+│ NoodleAI application        │
+│                             │
+├─────────────────────────────┤ 0x50000
+│ Model directory             │
+├─────────────────────────────┤ 0x51000
+│ Model parameters            │
+│ w00.bin, p00.bin, ...       │
+│ cfg.bin, mean.bin, ...      │
+└─────────────────────────────┘ 0x80000
+```

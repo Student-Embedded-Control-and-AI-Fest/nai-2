@@ -518,6 +518,13 @@ extern "C" int nai_infer_load_active(void)
     return 0;
 }
 
+#if defined(NAI_BENCH_FCN) && NAI_BENCH_FCN
+extern "C" uint32_t nai_infer_last_fcn_us(void)
+{
+    return s_model.lastFcnUs();
+}
+#endif
+
 extern "C" void nai_infer_clear(void)
 {
     s_model.clearRuntime();
